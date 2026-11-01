@@ -288,7 +288,9 @@ class MacInputController:
         self._mt_3f_start_pos: Dict[int, Tuple[float, float]] = {}
         self._mt_3f_max_delta: float = 0.0
         self._mt_click_consumed: bool = False
+        self._mt_swipe_triggered: bool = False
         self._last_3f_middle_ts: float = 0.0
+        self._last_3f_swipe_ts: float = 0.0
         self._emulated_middle_source: Optional[int] = None
 
         self._init_cgs_cursor_api()
@@ -374,6 +376,7 @@ class MacInputController:
                 self._mt_last_3f_ts = now
                 if not self._mt_in_3f_gesture and self._mt_max_fingers <= 3:
                     self._mt_in_3f_gesture = True
+                    self._mt_swipe_triggered = False
                     self._mt_3f_start_ts = now
                     self._mt_3f_start_pos = {
                         t.identifier: (t.normalized.position.x, t.normalized.position.y)
@@ -381,11 +384,15 @@ class MacInputController:
                     }
                     self._mt_3f_max_delta = 0.0
                 elif self._mt_in_3f_gesture:
+                    dxs: List[float] = []
+                    dys: List[float] = []
                     for t in active:
                         orig = self._mt_3f_start_pos.get(t.identifier)
                         if orig is not None:
                             dx = t.normalized.position.x - orig[0]
                             dy = t.normalized.position.y - orig[1]
+                            dxs.append(dx)
+                            dys.append(dy)
                             dist = (dx * dx + dy * dy) ** 0.5
                             if dist > self._mt_3f_max_delta:
                                 self._mt_3f_max_delta = dist
@@ -394,6 +401,23 @@ class MacInputController:
                                 t.normalized.position.x,
                                 t.normalized.position.y,
                             )
+
+                    if (
+                        self.remote_active
+                        and not self._mt_swipe_triggered
+                        and len(dys) >= 2
+                        and (now - self._last_3f_swipe_ts > 0.30)
+                    ):
+                        avg_dx = sum(dxs) / len(dxs)
+                        avg_dy = sum(dys) / len(dys)
+                        if abs(avg_dy) >= 0.10 and abs(avg_dy) > abs(avg_dx) * 1.3:
+                            self._mt_swipe_triggered = True
+                            self._mt_click_consumed = True
+                            self._last_3f_swipe_ts = now
+                            if avg_dy > 0:
+                                self._trigger_win_tab()
+                            else:
+                                self._trigger_win_esc()
             elif count > 3:
                 self._mt_in_3f_gesture = False
 
@@ -403,6 +427,7 @@ class MacInputController:
                     and self._mt_in_3f_gesture
                     and self._mt_max_fingers == 3
                     and not self._mt_click_consumed
+                    and not self._mt_swipe_triggered
                     and (now - self._last_3f_middle_ts > 0.15)
                     and (0.012 <= (now - self._mt_3f_start_ts) <= 0.45)
                     and self._mt_3f_max_delta <= 0.075
@@ -412,6 +437,7 @@ class MacInputController:
                     self._trigger_three_finger_middle_click()
 
                 self._mt_in_3f_gesture = False
+                self._mt_swipe_triggered = False
                 self._mt_max_fingers = 0
                 self._mt_click_consumed = False
                 self._mt_3f_start_pos.clear()
@@ -426,6 +452,28 @@ class MacInputController:
         t = threading.Timer(0.02, lambda: self.on_mouse_button(3, 0))
         t.daemon = True
         t.start()
+
+    def _trigger_win_tab(self) -> None:
+        """Send Win + Tab to Windows on 3-finger swipe up."""
+        def _seq() -> None:
+            self.on_key_event(0x15B, 1)  # VK_LWIN down
+            time.sleep(0.015)
+            self.on_key_event(0x109, 1)  # VK_TAB down
+            time.sleep(0.025)
+            self.on_key_event(0x109, 0)  # VK_TAB up
+            time.sleep(0.015)
+            self.on_key_event(0x15B, 0)  # VK_LWIN up
+
+        threading.Thread(target=_seq, daemon=True).start()
+
+    def _trigger_win_esc(self) -> None:
+        """Send Esc to Windows on 3-finger swipe down."""
+        def _seq() -> None:
+            self.on_key_event(0x11B, 1)  # VK_ESCAPE down
+            time.sleep(0.025)
+            self.on_key_event(0x11B, 0)  # VK_ESCAPE up
+
+        threading.Thread(target=_seq, daemon=True).start()
 
     def _is_three_finger_active(self) -> bool:
         if self._mt_active_fingers == 3:
@@ -473,6 +521,11 @@ class MacInputController:
             cg.CGSHideCursor.restype = ctypes.c_int32
             cg.CGSShowCursor.argtypes = [ctypes.c_uint32]
             cg.CGSShowCursor.restype = ctypes.c_int32
+            cg.CGSSetGlobalHotKeyOperatingMode.argtypes = [
+                ctypes.c_uint32,
+                ctypes.c_uint32,
+            ]
+            cg.CGSSetGlobalHotKeyOperatingMode.restype = ctypes.c_int32
 
             cid = cg._CGSDefaultConnection()
             key = cf.CFStringCreateWithCString(
@@ -530,6 +583,8 @@ class MacInputController:
 
         self.remote_active = True
         try:
+            if self._cgs_lib is not None and self._cgs_cid:
+                self._cgs_lib.CGSSetGlobalHotKeyOperatingMode(self._cgs_cid, 1)
             Quartz.CGAssociateMouseAndMouseCursorPosition(False)
             self._hide_cursor_now()
         except Exception as exc:
@@ -543,6 +598,8 @@ class MacInputController:
             return
 
         try:
+            if self._cgs_lib is not None and self._cgs_cid:
+                self._cgs_lib.CGSSetGlobalHotKeyOperatingMode(self._cgs_cid, 0)
             self._ignore_next_warp_until = time.monotonic() + 0.02
             Quartz.CGWarpMouseCursorPosition((float(entry_os_x), float(entry_os_y)))
             Quartz.CGAssociateMouseAndMouseCursorPosition(True)
@@ -589,7 +646,12 @@ class MacInputController:
                 | Quartz.CGEventMaskBit(Quartz.kCGEventKeyDown)
                 | Quartz.CGEventMaskBit(Quartz.kCGEventKeyUp)
                 | Quartz.CGEventMaskBit(Quartz.kCGEventFlagsChanged)
+                | Quartz.CGEventMaskBit(18)  # NSEventTypeRotate
+                | Quartz.CGEventMaskBit(19)  # NSEventTypeBeginGesture
+                | Quartz.CGEventMaskBit(20)  # NSEventTypeEndGesture
                 | Quartz.CGEventMaskBit(29)  # NSEventTypeGesture
+                | Quartz.CGEventMaskBit(30)  # kCGSEventDockControl (Dock Mission Control / App Expose swipe)
+                | Quartz.CGEventMaskBit(31)  # NSEventTypeSwipe
                 | Quartz.CGEventMaskBit(32)  # NSEventTypeSmartMagnify
                 | Quartz.CGEventMaskBit(33)  # NSEventTypeQuickLook (3-finger Look Up click)
             )
@@ -740,7 +802,7 @@ class MacInputController:
                     self._trigger_three_finger_middle_click()
                 return None
 
-            if event_type in (29, 32):
+            if event_type in (18, 19, 20, 29, 30, 31, 32):
                 return None
 
             if event_type == Quartz.kCGEventLeftMouseDown:

@@ -303,11 +303,18 @@ def mac_keycode_to_win_vk(
 ) -> Optional[Tuple[int, int]]:
     """
     Convert a macOS CGKeyCode to (win_vk, flags).
+    Synthetic keycodes >= 0x100 encode a raw Windows VK (mac_keycode - 0x100)
+    that bypasses modifier swapping (used for explicit gestures like Win+Tab).
     When swap_cmd_ctrl is True (default):
       - Mac Command (0x37/0x36) -> Windows Control (VK_LCONTROL / VK_RCONTROL)
       - Mac Control (0x3B/0x3E) -> Windows Key (VK_LWIN / VK_RWIN)
     So Cmd+C, Cmd+V, Cmd+A, Cmd+Z, Cmd+F work naturally on Windows!
     """
+    if mac_keycode >= 0x100:
+        vk = mac_keycode - 0x100
+        flags = 1 if vk in EXTENDED_WIN_VKS else 0
+        return vk, flags
+
     vk = MAC_KEYCODE_TO_WIN_VK.get(mac_keycode)
     if vk is None:
         return None
