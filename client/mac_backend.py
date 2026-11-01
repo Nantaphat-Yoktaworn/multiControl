@@ -15,11 +15,12 @@ Responsibilities:
 
 from __future__ import annotations
 
+import ctypes
 import logging
 import subprocess
 import threading
 import time
-from typing import Callable, List, Optional, Set, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from layout_engine import DisplayRect
 
@@ -31,6 +32,53 @@ try:
 except ImportError:
     Quartz = None  # type: ignore
     HAS_QUARTZ = False
+
+
+class _MTPoint(ctypes.Structure):
+    _fields_ = [
+        ("x", ctypes.c_float),
+        ("y", ctypes.c_float),
+    ]
+
+
+class _MTVector(ctypes.Structure):
+    _fields_ = [
+        ("position", _MTPoint),
+        ("velocity", _MTPoint),
+    ]
+
+
+class _MTTouch(ctypes.Structure):
+    """Apple MultitouchSupport.framework 96-byte contact structure (x86_64 & arm64)."""
+
+    _fields_ = [
+        ("frame", ctypes.c_int),
+        ("timestamp", ctypes.c_double),
+        ("identifier", ctypes.c_int),
+        ("state", ctypes.c_int),  # 4 = Touching surface
+        ("finger_id", ctypes.c_int),
+        ("hand_id", ctypes.c_int),
+        ("normalized", _MTVector),
+        ("size", ctypes.c_float),
+        ("field9", ctypes.c_int),
+        ("angle", ctypes.c_float),
+        ("major_axis", ctypes.c_float),
+        ("minor_axis", ctypes.c_float),
+        ("mm", _MTVector),
+        ("field14", ctypes.c_int),
+        ("field15", ctypes.c_int),
+        ("density", ctypes.c_float),
+    ]
+
+
+_MTContactCallback = ctypes.CFUNCTYPE(
+    ctypes.c_int,
+    ctypes.c_void_p,
+    ctypes.POINTER(_MTTouch),
+    ctypes.c_int,
+    ctypes.c_double,
+    ctypes.c_int,
+)
 
 
 # Device-dependent modifier masks in CGEventFlags (IOKit/IOLLEvent.h)
@@ -227,7 +275,167 @@ class MacInputController:
         self._ignore_next_warp_until: float = 0.0
         self._cgs_lib = None
         self._cgs_cid: int = 0
+
+        # Multitouch trackpad 3-finger middle-click state
+        self._mt_lib = None
+        self._mt_callback_ref = None
+        self._mt_devices: List[int] = []
+        self._mt_active_fingers: int = 0
+        self._mt_max_fingers: int = 0
+        self._mt_in_3f_gesture: bool = False
+        self._mt_3f_start_ts: float = 0.0
+        self._mt_last_3f_ts: float = 0.0
+        self._mt_3f_start_pos: Dict[int, Tuple[float, float]] = {}
+        self._mt_3f_max_delta: float = 0.0
+        self._mt_click_consumed: bool = False
+        self._last_3f_middle_ts: float = 0.0
+        self._emulated_middle_source: Optional[int] = None
+
         self._init_cgs_cursor_api()
+        self._init_multitouch_trackpad()
+
+    def _init_multitouch_trackpad(self) -> None:
+        """
+        Hook Apple MultitouchSupport.framework so 3-finger click or 3-finger tap
+        on the MacBook trackpad triggers a Middle Mouse Click on Windows.
+        """
+        if not HAS_QUARTZ:
+            return
+        try:
+            cf = ctypes.CDLL(
+                "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
+            )
+            cf.CFArrayGetCount.argtypes = [ctypes.c_void_p]
+            cf.CFArrayGetCount.restype = ctypes.c_long
+            cf.CFArrayGetValueAtIndex.argtypes = [ctypes.c_void_p, ctypes.c_long]
+            cf.CFArrayGetValueAtIndex.restype = ctypes.c_void_p
+
+            mt = ctypes.CDLL(
+                "/System/Library/PrivateFrameworks/MultitouchSupport.framework/MultitouchSupport"
+            )
+            mt.MTDeviceCreateList.argtypes = []
+            mt.MTDeviceCreateList.restype = ctypes.c_void_p
+            mt.MTRegisterContactFrameCallback.argtypes = [
+                ctypes.c_void_p,
+                _MTContactCallback,
+            ]
+            mt.MTRegisterContactFrameCallback.restype = None
+            mt.MTDeviceStart.argtypes = [ctypes.c_void_p, ctypes.c_int]
+            mt.MTDeviceStart.restype = None
+
+            self._mt_callback_ref = _MTContactCallback(self._on_multitouch_frame)
+            dev_list = mt.MTDeviceCreateList()
+            if not dev_list:
+                return
+
+            count = cf.CFArrayGetCount(dev_list)
+            for i in range(count):
+                dev = cf.CFArrayGetValueAtIndex(dev_list, i)
+                if dev:
+                    mt.MTRegisterContactFrameCallback(dev, self._mt_callback_ref)
+                    mt.MTDeviceStart(dev, 0)
+                    self._mt_devices.append(dev)
+
+            self._mt_lib = mt
+            logger.info(
+                "Multitouch trackpad 3-finger middle-click active (%d device(s)).",
+                len(self._mt_devices),
+            )
+        except Exception as exc:
+            logger.debug("MultitouchSupport init warning: %s", exc)
+
+    def _on_multitouch_frame(
+        self,
+        device: int,
+        touches_ptr,
+        n_fingers: int,
+        timestamp: float,
+        frame: int,
+    ) -> int:
+        try:
+            now = time.monotonic()
+            touching: List[_MTTouch] = []
+            near: List[_MTTouch] = []
+            for i in range(max(0, n_fingers)):
+                t = touches_ptr[i]
+                if t.state == 4:
+                    touching.append(t)
+                elif t.state in (3, 5):
+                    near.append(t)
+
+            active = touching if touching else near
+            count = len(active)
+            self._mt_active_fingers = count
+
+            if count > self._mt_max_fingers:
+                self._mt_max_fingers = count
+
+            if count == 3:
+                self._mt_last_3f_ts = now
+                if not self._mt_in_3f_gesture and self._mt_max_fingers <= 3:
+                    self._mt_in_3f_gesture = True
+                    self._mt_3f_start_ts = now
+                    self._mt_3f_start_pos = {
+                        t.identifier: (t.normalized.position.x, t.normalized.position.y)
+                        for t in active
+                    }
+                    self._mt_3f_max_delta = 0.0
+                elif self._mt_in_3f_gesture:
+                    for t in active:
+                        orig = self._mt_3f_start_pos.get(t.identifier)
+                        if orig is not None:
+                            dx = t.normalized.position.x - orig[0]
+                            dy = t.normalized.position.y - orig[1]
+                            dist = (dx * dx + dy * dy) ** 0.5
+                            if dist > self._mt_3f_max_delta:
+                                self._mt_3f_max_delta = dist
+                        else:
+                            self._mt_3f_start_pos[t.identifier] = (
+                                t.normalized.position.x,
+                                t.normalized.position.y,
+                            )
+            elif count > 3:
+                self._mt_in_3f_gesture = False
+
+            if count == 0:
+                if (
+                    self.remote_active
+                    and self._mt_in_3f_gesture
+                    and self._mt_max_fingers == 3
+                    and not self._mt_click_consumed
+                    and (now - self._last_3f_middle_ts > 0.15)
+                    and (0.012 <= (now - self._mt_3f_start_ts) <= 0.45)
+                    and self._mt_3f_max_delta <= 0.075
+                ):
+                    self._mt_click_consumed = True
+                    self._last_3f_middle_ts = now
+                    self._trigger_three_finger_middle_click()
+
+                self._mt_in_3f_gesture = False
+                self._mt_max_fingers = 0
+                self._mt_click_consumed = False
+                self._mt_3f_start_pos.clear()
+                self._mt_3f_max_delta = 0.0
+        except Exception:
+            pass
+        return 0
+
+    def _trigger_three_finger_middle_click(self) -> None:
+        """Send Middle Mouse DOWN immediately and UP after 20ms so packet ordering and frame polling are guaranteed."""
+        self.on_mouse_button(3, 1)
+        t = threading.Timer(0.02, lambda: self.on_mouse_button(3, 0))
+        t.daemon = True
+        t.start()
+
+    def _is_three_finger_active(self) -> bool:
+        if self._mt_active_fingers == 3:
+            return True
+        if (
+            self._mt_max_fingers == 3
+            and (time.monotonic() - self._mt_last_3f_ts) <= 0.12
+        ):
+            return True
+        return False
 
     def _init_cgs_cursor_api(self) -> None:
         """
@@ -381,6 +589,9 @@ class MacInputController:
                 | Quartz.CGEventMaskBit(Quartz.kCGEventKeyDown)
                 | Quartz.CGEventMaskBit(Quartz.kCGEventKeyUp)
                 | Quartz.CGEventMaskBit(Quartz.kCGEventFlagsChanged)
+                | Quartz.CGEventMaskBit(29)  # NSEventTypeGesture
+                | Quartz.CGEventMaskBit(32)  # NSEventTypeSmartMagnify
+                | Quartz.CGEventMaskBit(33)  # NSEventTypeQuickLook (3-finger Look Up click)
             )
 
             prompted_settings = False
@@ -521,17 +732,48 @@ class MacInputController:
                 return event
 
             # 3. Remote is Active: intercept buttons, scroll, and keys and send to Windows!
+            if event_type == 33:  # NSEventTypeQuickLook (macOS 3-finger click Look Up)
+                now = time.monotonic()
+                if not self._mt_click_consumed and (now - self._last_3f_middle_ts > 0.15):
+                    self._mt_click_consumed = True
+                    self._last_3f_middle_ts = now
+                    self._trigger_three_finger_middle_click()
+                return None
+
+            if event_type in (29, 32):
+                return None
+
             if event_type == Quartz.kCGEventLeftMouseDown:
-                self.on_mouse_button(1, 1)
+                if self._is_three_finger_active():
+                    self._mt_click_consumed = True
+                    self._last_3f_middle_ts = time.monotonic()
+                    self._emulated_middle_source = event_type
+                    self.on_mouse_button(3, 1)
+                else:
+                    self.on_mouse_button(1, 1)
                 return None
             if event_type == Quartz.kCGEventLeftMouseUp:
-                self.on_mouse_button(1, 0)
+                if self._emulated_middle_source is not None:
+                    self._emulated_middle_source = None
+                    self.on_mouse_button(3, 0)
+                else:
+                    self.on_mouse_button(1, 0)
                 return None
             if event_type == Quartz.kCGEventRightMouseDown:
-                self.on_mouse_button(2, 1)
+                if self._is_three_finger_active():
+                    self._mt_click_consumed = True
+                    self._last_3f_middle_ts = time.monotonic()
+                    self._emulated_middle_source = event_type
+                    self.on_mouse_button(3, 1)
+                else:
+                    self.on_mouse_button(2, 1)
                 return None
             if event_type == Quartz.kCGEventRightMouseUp:
-                self.on_mouse_button(2, 0)
+                if self._emulated_middle_source is not None:
+                    self._emulated_middle_source = None
+                    self.on_mouse_button(3, 0)
+                else:
+                    self.on_mouse_button(2, 0)
                 return None
             if event_type == Quartz.kCGEventOtherMouseDown:
                 btn_num = int(
