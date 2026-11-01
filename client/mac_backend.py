@@ -33,6 +33,25 @@ except ImportError:
     Quartz = None  # type: ignore
     HAS_QUARTZ = False
 
+try:
+    import AppKit
+    HAS_APPKIT = True
+except ImportError:
+    AppKit = None  # type: ignore
+    HAS_APPKIT = False
+
+# IOKit/hidsystem/ev_keymap.h NX_KEYTYPE_* -> Synthetic Windows VK (0x100 + WIN_VK)
+NX_MEDIA_KEY_TO_SYNTH_VK: Dict[int, int] = {
+    0: 0x1AF,   # NX_KEYTYPE_SOUND_UP -> WIN_VK_VOLUME_UP (0xAF)
+    1: 0x1AE,   # NX_KEYTYPE_SOUND_DOWN -> WIN_VK_VOLUME_DOWN (0xAE)
+    7: 0x1AD,   # NX_KEYTYPE_MUTE -> WIN_VK_VOLUME_MUTE (0xAD)
+    16: 0x1B3,  # NX_KEYTYPE_PLAY -> WIN_VK_MEDIA_PLAY_PAUSE (0xB3)
+    17: 0x1B0,  # NX_KEYTYPE_NEXT -> WIN_VK_MEDIA_NEXT_TRACK (0xB0)
+    18: 0x1B1,  # NX_KEYTYPE_PREVIOUS -> WIN_VK_MEDIA_PREV_TRACK (0xB1)
+    19: 0x1B0,  # NX_KEYTYPE_FAST -> WIN_VK_MEDIA_NEXT_TRACK (0xB0)
+    20: 0x1B1,  # NX_KEYTYPE_REWIND -> WIN_VK_MEDIA_PREV_TRACK (0xB1)
+}
+
 
 class _MTPoint(ctypes.Structure):
     _fields_ = [
@@ -269,12 +288,15 @@ class MacInputController:
         self._local_modifiers_down: Set[int] = set()
         self._local_buttons_down: Set[int] = set()
         self._tap = None
+        self._session_tap = None
         self._run_loop = None
         self._thread: Optional[threading.Thread] = None
         self._running = False
         self._ignore_next_warp_until: float = 0.0
         self._cgs_lib = None
         self._cgs_cid: int = 0
+        self._last_media_sig: Tuple[int, int, int] = (-1, -1, -1)
+        self._last_media_ts: float = 0.0
 
         # Multitouch trackpad 3-finger middle-click state
         self._mt_lib = None
@@ -646,6 +668,7 @@ class MacInputController:
                 | Quartz.CGEventMaskBit(Quartz.kCGEventKeyDown)
                 | Quartz.CGEventMaskBit(Quartz.kCGEventKeyUp)
                 | Quartz.CGEventMaskBit(Quartz.kCGEventFlagsChanged)
+                | Quartz.CGEventMaskBit(14)  # NSEventTypeSystemDefined (Volume / Media keys)
                 | Quartz.CGEventMaskBit(18)  # NSEventTypeRotate
                 | Quartz.CGEventMaskBit(19)  # NSEventTypeBeginGesture
                 | Quartz.CGEventMaskBit(20)  # NSEventTypeEndGesture
@@ -688,6 +711,35 @@ class MacInputController:
                 self._run_loop, source, Quartz.kCFRunLoopCommonModes
             )
             Quartz.CGEventTapEnable(self._tap, True)
+
+            # Attach session-level tap for NX_SYSDEFINED media/volume keys & Dock gestures
+            try:
+                sess_mask = (
+                    Quartz.CGEventMaskBit(14)
+                    | Quartz.CGEventMaskBit(29)
+                    | Quartz.CGEventMaskBit(30)
+                    | Quartz.CGEventMaskBit(31)
+                    | Quartz.CGEventMaskBit(33)
+                )
+                self._session_tap = Quartz.CGEventTapCreate(
+                    Quartz.kCGSessionEventTap,
+                    Quartz.kCGHeadInsertEventTap,
+                    Quartz.kCGEventTapOptionDefault,
+                    sess_mask,
+                    self._event_tap_callback,
+                    None,
+                )
+                if self._session_tap is not None:
+                    sess_source = Quartz.CFMachPortCreateRunLoopSource(
+                        None, self._session_tap, 0
+                    )
+                    Quartz.CFRunLoopAddSource(
+                        self._run_loop, sess_source, Quartz.kCFRunLoopCommonModes
+                    )
+                    Quartz.CGEventTapEnable(self._session_tap, True)
+            except Exception as exc:
+                logger.debug("Session event tap warning: %s", exc)
+
             ready_event.set()
             Quartz.CFRunLoopRun()
 
@@ -715,6 +767,8 @@ class MacInputController:
             ):
                 if self._tap is not None:
                     Quartz.CGEventTapEnable(self._tap, True)
+                if self._session_tap is not None:
+                    Quartz.CGEventTapEnable(self._session_tap, True)
                 return event
 
             # 1. Mouse Movement & Dragging
@@ -794,6 +848,28 @@ class MacInputController:
                 return event
 
             # 3. Remote is Active: intercept buttons, scroll, and keys and send to Windows!
+            if event_type == 14 and HAS_APPKIT:  # NSEventTypeSystemDefined (Volume / Media keys)
+                ns_ev = AppKit.NSEvent.eventWithCGEvent_(event)
+                if ns_ev is not None and int(ns_ev.subtype()) == 8:
+                    data1 = int(ns_ev.data1()) & 0xFFFFFFFF
+                    nx_key = (data1 >> 16) & 0xFFFF
+                    nx_flags = data1 & 0xFFFF
+                    nx_state = (nx_flags >> 8) & 0xFF
+                    is_repeat = int(nx_flags & 0x1)
+                    synth_vk = NX_MEDIA_KEY_TO_SYNTH_VK.get(nx_key)
+                    if synth_vk is not None:
+                        now = time.monotonic()
+                        sig = (nx_key, nx_state, is_repeat)
+                        if sig != self._last_media_sig or (now - self._last_media_ts) >= 0.015:
+                            self._last_media_sig = sig
+                            self._last_media_ts = now
+                            if nx_state == 0x0A:  # NX_KEYDOWN
+                                self.on_key_event(synth_vk, 1)
+                            elif nx_state == 0x0B:  # NX_KEYUP
+                                self.on_key_event(synth_vk, 0)
+                        return None
+                return event
+
             if event_type == 33:  # NSEventTypeQuickLook (macOS 3-finger click Look Up)
                 now = time.monotonic()
                 if not self._mt_click_consumed and (now - self._last_3f_middle_ts > 0.15):
