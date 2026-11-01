@@ -219,6 +219,92 @@ class MacInputController:
         self._thread: Optional[threading.Thread] = None
         self._running = False
         self._ignore_next_warp_until: float = 0.0
+        self._awaiting_park_warp: bool = False
+        self._cgs_lib = None
+        self._cgs_cid: int = 0
+        self._init_cgs_cursor_api()
+
+    def _init_cgs_cursor_api(self) -> None:
+        """
+        Enable 'SetsCursorInBackground' via CoreGraphics private CGS API
+        (used by Synergy / Barrier / Input Leap) so CGSHideCursor / CGDisplayHideCursor
+        hides the macOS hardware cursor globally even when running in the background.
+        """
+        if not HAS_QUARTZ:
+            return
+        try:
+            import ctypes
+            cf = ctypes.cdll.LoadLibrary(
+                "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
+            )
+            cg = ctypes.cdll.LoadLibrary(
+                "/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices"
+            )
+            cf.CFStringCreateWithCString.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_char_p,
+                ctypes.c_uint32,
+            ]
+            cf.CFStringCreateWithCString.restype = ctypes.c_void_p
+            kCFBooleanTrue = ctypes.c_void_p.in_dll(cf, "kCFBooleanTrue")
+
+            cg._CGSDefaultConnection.restype = ctypes.c_uint32
+            cg.CGSSetConnectionProperty.argtypes = [
+                ctypes.c_uint32,
+                ctypes.c_uint32,
+                ctypes.c_void_p,
+                ctypes.c_void_p,
+            ]
+            cg.CGSSetConnectionProperty.restype = ctypes.c_int32
+            cg.CGSHideCursor.argtypes = [ctypes.c_uint32]
+            cg.CGSHideCursor.restype = ctypes.c_int32
+            cg.CGSShowCursor.argtypes = [ctypes.c_uint32]
+            cg.CGSShowCursor.restype = ctypes.c_int32
+
+            cid = cg._CGSDefaultConnection()
+            key = cf.CFStringCreateWithCString(
+                None, b"SetsCursorInBackground", 0x08000100
+            )
+            cg.CGSSetConnectionProperty(cid, cid, key, kCFBooleanTrue)
+            self._cgs_lib = cg
+            self._cgs_cid = cid
+
+            # Remove 250ms warp suppression delay so warping cursor never drops delta events
+            try:
+                src = Quartz.CGEventSourceCreate(
+                    Quartz.kCGEventSourceStateCombinedSessionState
+                )
+                if src is not None:
+                    Quartz.CGEventSourceSetLocalEventsSuppressionInterval(src, 0.0)
+            except Exception:
+                pass
+        except Exception as exc:
+            logger.debug("CGS cursor API init warning: %s", exc)
+
+    def _hide_cursor_now(self) -> None:
+        if not HAS_QUARTZ:
+            return
+        try:
+            if self._cgs_lib is not None and self._cgs_cid:
+                self._cgs_lib.CGSHideCursor(self._cgs_cid)
+            Quartz.CGDisplayHideCursor(Quartz.CGMainDisplayID())
+            self._cursor_hidden = True
+        except Exception:
+            pass
+
+    def _show_cursor_now(self) -> None:
+        if not HAS_QUARTZ:
+            return
+        try:
+            for _ in range(6):
+                if self._cgs_lib is not None and self._cgs_cid:
+                    self._cgs_lib.CGSShowCursor(self._cgs_cid)
+                Quartz.CGDisplayShowCursor(Quartz.CGMainDisplayID())
+                if Quartz.CGCursorIsVisible():
+                    break
+            self._cursor_hidden = False
+        except Exception:
+            pass
 
     def set_park_position(self, x: float, y: float) -> None:
         """Set safe center point on primary Mac screen where cursor parks when remote is active."""
@@ -232,12 +318,8 @@ class MacInputController:
 
         self.remote_active = True
         try:
-            self._ignore_next_warp_until = time.monotonic() + 0.04
-            Quartz.CGWarpMouseCursorPosition(self._park_pos)
             Quartz.CGAssociateMouseAndMouseCursorPosition(False)
-            if not self._cursor_hidden:
-                Quartz.CGDisplayHideCursor(Quartz.CGMainDisplayID())
-                self._cursor_hidden = True
+            self._hide_cursor_now()
         except Exception as exc:
             logger.warning("Failed to lock Mac cursor: %s", exc)
 
@@ -249,12 +331,10 @@ class MacInputController:
             return
 
         try:
-            self._ignore_next_warp_until = time.monotonic() + 0.04
+            self._ignore_next_warp_until = time.monotonic() + 0.02
             Quartz.CGWarpMouseCursorPosition((float(entry_os_x), float(entry_os_y)))
             Quartz.CGAssociateMouseAndMouseCursorPosition(True)
-            if self._cursor_hidden:
-                Quartz.CGDisplayShowCursor(Quartz.CGMainDisplayID())
-                self._cursor_hidden = False
+            self._show_cursor_now()
         except Exception as exc:
             logger.warning("Failed to restore Mac cursor: %s", exc)
 
@@ -380,7 +460,12 @@ class MacInputController:
                 ox, oy = float(loc.x), float(loc.y)
 
                 self.on_mouse_move(ox, oy, dx, dy)
-                return None if self.remote_active else event
+                if self.remote_active:
+                    Quartz.CGAssociateMouseAndMouseCursorPosition(False)
+                    if Quartz.CGCursorIsVisible():
+                        self._hide_cursor_now()
+                    return None
+                return event
 
             # 2. Check Emergency Return Hotkey on KeyDown before swallowing
             if event_type == Quartz.kCGEventKeyDown:
