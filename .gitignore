@@ -1,0 +1,17 @@
+# Runtime state & secrets
+data/
+config.json
+.env
+
+# Python virtual environments & caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.log
+
+# OS metadata
+.DS_Store
+Thumbs.db
