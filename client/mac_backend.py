@@ -282,6 +282,10 @@ class MacInputController:
 
         self.remote_active: bool = False
         self.screen_locked: bool = False
+        self.three_finger_middle_click: bool = True
+        self.three_finger_swipe_windows: bool = True
+        self.suppress_mac_mission_control: bool = True
+        self.forward_media_keys: bool = True
         self._cursor_hidden: bool = False
         self._park_pos: Tuple[float, float] = (500.0, 500.0)
         self._pressed_modifiers: Set[int] = set()
@@ -426,6 +430,7 @@ class MacInputController:
 
                     if (
                         self.remote_active
+                        and self.three_finger_swipe_windows
                         and not self._mt_swipe_triggered
                         and len(dys) >= 2
                         and (now - self._last_3f_swipe_ts > 0.30)
@@ -446,6 +451,7 @@ class MacInputController:
             if count == 0:
                 if (
                     self.remote_active
+                    and self.three_finger_middle_click
                     and self._mt_in_3f_gesture
                     and self._mt_max_fingers == 3
                     and not self._mt_click_consumed
@@ -597,6 +603,26 @@ class MacInputController:
         """Set safe center point on primary Mac screen where cursor parks when remote is active."""
         self._park_pos = (x, y)
 
+    def update_feature_flags(
+        self,
+        three_finger_middle_click: bool = True,
+        three_finger_swipe_windows: bool = True,
+        suppress_mac_mission_control: bool = True,
+        forward_media_keys: bool = True,
+    ) -> None:
+        """Apply live feature toggles from the Web UI settings."""
+        self.three_finger_middle_click = three_finger_middle_click
+        self.three_finger_swipe_windows = three_finger_swipe_windows
+        self.suppress_mac_mission_control = suppress_mac_mission_control
+        self.forward_media_keys = forward_media_keys
+        if self.remote_active and self._cgs_lib is not None and self._cgs_cid:
+            try:
+                self._cgs_lib.CGSSetGlobalHotKeyOperatingMode(
+                    self._cgs_cid, 1 if self.suppress_mac_mission_control else 0
+                )
+            except Exception:
+                pass
+
     def enter_remote_mode(self) -> None:
         """Lock and hide local Mac cursor so mouse/keyboard control Windows exclusively."""
         if not HAS_QUARTZ or self.remote_active:
@@ -606,7 +632,9 @@ class MacInputController:
         self.remote_active = True
         try:
             if self._cgs_lib is not None and self._cgs_cid:
-                self._cgs_lib.CGSSetGlobalHotKeyOperatingMode(self._cgs_cid, 1)
+                self._cgs_lib.CGSSetGlobalHotKeyOperatingMode(
+                    self._cgs_cid, 1 if self.suppress_mac_mission_control else 0
+                )
             Quartz.CGAssociateMouseAndMouseCursorPosition(False)
             self._hide_cursor_now()
         except Exception as exc:
@@ -849,6 +877,8 @@ class MacInputController:
 
             # 3. Remote is Active: intercept buttons, scroll, and keys and send to Windows!
             if event_type == 14 and HAS_APPKIT:  # NSEventTypeSystemDefined (Volume / Media keys)
+                if not self.forward_media_keys:
+                    return event
                 ns_ev = AppKit.NSEvent.eventWithCGEvent_(event)
                 if ns_ev is not None and int(ns_ev.subtype()) == 8:
                     data1 = int(ns_ev.data1()) & 0xFFFFFFFF
@@ -871,6 +901,8 @@ class MacInputController:
                 return event
 
             if event_type == 33:  # NSEventTypeQuickLook (macOS 3-finger click Look Up)
+                if not self.three_finger_middle_click:
+                    return event
                 now = time.monotonic()
                 if not self._mt_click_consumed and (now - self._last_3f_middle_ts > 0.15):
                     self._mt_click_consumed = True
@@ -879,10 +911,12 @@ class MacInputController:
                 return None
 
             if event_type in (18, 19, 20, 29, 30, 31, 32):
-                return None
+                if self.suppress_mac_mission_control or self.three_finger_swipe_windows:
+                    return None
+                return event
 
             if event_type == Quartz.kCGEventLeftMouseDown:
-                if self._is_three_finger_active():
+                if self.three_finger_middle_click and self._is_three_finger_active():
                     self._mt_click_consumed = True
                     self._last_3f_middle_ts = time.monotonic()
                     self._emulated_middle_source = event_type
@@ -898,7 +932,7 @@ class MacInputController:
                     self.on_mouse_button(1, 0)
                 return None
             if event_type == Quartz.kCGEventRightMouseDown:
-                if self._is_three_finger_active():
+                if self.three_finger_middle_click and self._is_three_finger_active():
                     self._mt_click_consumed = True
                     self._last_3f_middle_ts = time.monotonic()
                     self._emulated_middle_source = event_type

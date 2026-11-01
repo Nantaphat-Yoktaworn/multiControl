@@ -139,6 +139,11 @@ class LayoutSettings:
     swap_cmd_ctrl: bool = True
     swap_opt_win: bool = False
     clipboard_sync: bool = True
+    forward_media_keys: bool = True
+    three_finger_middle_click: bool = True
+    three_finger_swipe_windows: bool = True
+    suppress_mac_mission_control: bool = True
+    lock_to_screen_while_dragging: bool = True
     invert_scroll_on_windows: bool = False
     scroll_speed: float = 1.0
     mouse_speed_windows: float = 1.0
@@ -151,6 +156,11 @@ class LayoutSettings:
             "swap_cmd_ctrl": self.swap_cmd_ctrl,
             "swap_opt_win": self.swap_opt_win,
             "clipboard_sync": self.clipboard_sync,
+            "forward_media_keys": self.forward_media_keys,
+            "three_finger_middle_click": self.three_finger_middle_click,
+            "three_finger_swipe_windows": self.three_finger_swipe_windows,
+            "suppress_mac_mission_control": self.suppress_mac_mission_control,
+            "lock_to_screen_while_dragging": self.lock_to_screen_while_dragging,
             "invert_scroll_on_windows": self.invert_scroll_on_windows,
             "scroll_speed": self.scroll_speed,
             "mouse_speed_windows": self.mouse_speed_windows,
@@ -167,6 +177,11 @@ class LayoutSettings:
             swap_cmd_ctrl=bool(data.get("swap_cmd_ctrl", True)),
             swap_opt_win=bool(data.get("swap_opt_win", False)),
             clipboard_sync=bool(data.get("clipboard_sync", True)),
+            forward_media_keys=bool(data.get("forward_media_keys", True)),
+            three_finger_middle_click=bool(data.get("three_finger_middle_click", True)),
+            three_finger_swipe_windows=bool(data.get("three_finger_swipe_windows", True)),
+            suppress_mac_mission_control=bool(data.get("suppress_mac_mission_control", True)),
+            lock_to_screen_while_dragging=bool(data.get("lock_to_screen_while_dragging", True)),
             invert_scroll_on_windows=bool(data.get("invert_scroll_on_windows", False)),
             scroll_speed=float(data.get("scroll_speed", 1.0)),
             mouse_speed_windows=float(data.get("mouse_speed_windows", 1.0)),

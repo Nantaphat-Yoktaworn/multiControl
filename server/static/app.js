@@ -7,20 +7,28 @@
   const ctx = canvas.getContext("2d");
   const wrapper = document.getElementById("canvasWrapper");
 
+  const DEFAULT_SETTINGS = {
+    swap_cmd_ctrl: true,
+    swap_opt_win: false,
+    clipboard_sync: true,
+    forward_media_keys: true,
+    three_finger_middle_click: true,
+    three_finger_swipe_windows: true,
+    suppress_mac_mission_control: true,
+    lock_to_screen_while_dragging: true,
+    invert_scroll_on_windows: false,
+    scroll_speed: 1.0,
+    mouse_speed_windows: 1.0,
+    corner_barrier_px: 0.0,
+    edge_snap_tolerance_px: 18.0,
+    wrap_around: false,
+  };
+
   let ws = null;
   let state = {
     displays: [],
     devices: [],
-    settings: {
-      swap_cmd_ctrl: true,
-      swap_opt_win: false,
-      clipboard_sync: true,
-      invert_scroll_on_windows: false,
-      scroll_speed: 1.0,
-      mouse_speed_windows: 1.0,
-      corner_barrier_px: 0.0,
-      edge_snap_tolerance_px: 18.0,
-    },
+    settings: { ...DEFAULT_SETTINGS },
     cursor: {
       device_id: "",
       display_id: "",
@@ -765,11 +773,23 @@
     renderDeviceList();
     renderSelectedMonitorInspector();
 
-    const s = state.settings;
+    const s = { ...DEFAULT_SETTINGS, ...(state.settings || {}) };
+    state.settings = s;
+
     document.getElementById("chkSwapCmdCtrl").checked = !!s.swap_cmd_ctrl;
     document.getElementById("chkSwapOptWin").checked = !!s.swap_opt_win;
+    document.getElementById("chkForwardMediaKeys").checked = s.forward_media_keys !== false;
     document.getElementById("chkClipboardSync").checked = !!s.clipboard_sync;
+
+    document.getElementById("chkThreeFingerMiddle").checked = s.three_finger_middle_click !== false;
+    document.getElementById("chkThreeFingerSwipe").checked = s.three_finger_swipe_windows !== false;
+    document.getElementById("chkSuppressMissionControl").checked =
+      s.suppress_mac_mission_control !== false;
+
+    document.getElementById("chkLockWhileDragging").checked =
+      s.lock_to_screen_while_dragging !== false;
     document.getElementById("chkInvertScroll").checked = !!s.invert_scroll_on_windows;
+    document.getElementById("chkWrapAround").checked = !!s.wrap_around;
 
     document.getElementById("rngMouseSpeed").value = s.mouse_speed_windows || 1.0;
     document.getElementById("lblMouseSpeed").textContent = `${Number(
@@ -780,6 +800,14 @@
     document.getElementById("lblScrollSpeed").textContent = `${Number(
       s.scroll_speed || 1.0
     ).toFixed(2)}×`;
+
+    const cb = Number(s.corner_barrier_px || 0);
+    document.getElementById("rngCornerBarrier").value = cb;
+    document.getElementById("lblCornerBarrier").textContent = `${Math.round(cb)} px`;
+
+    const tol = Number(s.edge_snap_tolerance_px || 18);
+    document.getElementById("rngEdgeTolerance").value = tol;
+    document.getElementById("lblEdgeTolerance").textContent = `${Math.round(tol)} px`;
   }
 
   function renderDeviceList() {
@@ -934,11 +962,28 @@
   function onSettingsChange() {
     state.settings.swap_cmd_ctrl = document.getElementById("chkSwapCmdCtrl").checked;
     state.settings.swap_opt_win = document.getElementById("chkSwapOptWin").checked;
+    state.settings.forward_media_keys = document.getElementById("chkForwardMediaKeys").checked;
     state.settings.clipboard_sync = document.getElementById("chkClipboardSync").checked;
+
+    state.settings.three_finger_middle_click =
+      document.getElementById("chkThreeFingerMiddle").checked;
+    state.settings.three_finger_swipe_windows =
+      document.getElementById("chkThreeFingerSwipe").checked;
+    state.settings.suppress_mac_mission_control = document.getElementById(
+      "chkSuppressMissionControl"
+    ).checked;
+
+    state.settings.lock_to_screen_while_dragging =
+      document.getElementById("chkLockWhileDragging").checked;
     state.settings.invert_scroll_on_windows = document.getElementById("chkInvertScroll").checked;
+    state.settings.wrap_around = document.getElementById("chkWrapAround").checked;
+
     state.settings.mouse_speed_windows = Number(document.getElementById("rngMouseSpeed").value);
     state.settings.scroll_speed = Number(document.getElementById("rngScrollSpeed").value);
-    state.settings.corner_barrier_px = 0.0;
+    state.settings.corner_barrier_px = Number(document.getElementById("rngCornerBarrier").value);
+    state.settings.edge_snap_tolerance_px = Number(
+      document.getElementById("rngEdgeTolerance").value
+    );
 
     document.getElementById(
       "lblMouseSpeed"
@@ -946,6 +991,12 @@
     document.getElementById(
       "lblScrollSpeed"
     ).textContent = `${state.settings.scroll_speed.toFixed(2)}×`;
+    document.getElementById("lblCornerBarrier").textContent = `${Math.round(
+      state.settings.corner_barrier_px
+    )} px`;
+    document.getElementById("lblEdgeTolerance").textContent = `${Math.round(
+      state.settings.edge_snap_tolerance_px
+    )} px`;
 
     render();
     scheduleSaveLayout(false);
@@ -954,13 +1005,33 @@
   [
     "chkSwapCmdCtrl",
     "chkSwapOptWin",
+    "chkForwardMediaKeys",
     "chkClipboardSync",
+    "chkThreeFingerMiddle",
+    "chkThreeFingerSwipe",
+    "chkSuppressMissionControl",
+    "chkLockWhileDragging",
     "chkInvertScroll",
+    "chkWrapAround",
     "rngMouseSpeed",
     "rngScrollSpeed",
+    "rngCornerBarrier",
+    "rngEdgeTolerance",
   ].forEach((id) => {
-    document.getElementById(id).addEventListener("input", onSettingsChange);
+    const el = document.getElementById(id);
+    if (el) el.addEventListener("input", onSettingsChange);
   });
+
+  const btnResetSettings = document.getElementById("btnResetSettings");
+  if (btnResetSettings) {
+    btnResetSettings.addEventListener("click", () => {
+      state.settings = { ...DEFAULT_SETTINGS };
+      syncUIFromState();
+      render();
+      saveLayoutNow(true);
+      showToast("All settings reset to default!");
+    });
+  }
 
   // Toolbar & Action Buttons
   document.getElementById("btnSaveLayout").addEventListener("click", () => saveLayoutNow(true));

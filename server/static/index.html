@@ -100,10 +100,13 @@
         </div>
       </main>
 
-      <!-- Right Sidebar: Input Mapping, Scroll & Edge Settings -->
+      <!-- Right Sidebar: Input Mapping, Trackpad Gestures, Scroll & Edge Settings -->
       <aside class="sidebar-right">
         <section class="panel-card">
-          <h2>Keyboard &amp; Clipboard</h2>
+          <div class="panel-header">
+            <h2>Keyboard, Audio &amp; Clipboard</h2>
+            <button class="btn-icon" id="btnResetSettings" title="Reset all settings to default">↺</button>
+          </div>
 
           <label class="toggle-row">
             <div>
@@ -123,6 +126,14 @@
 
           <label class="toggle-row">
             <div>
+              <strong>Forward Volume, Mute &amp; Media Keys</strong>
+              <small>Mac Volume Up/Down/Mute &amp; Play/Pause control Windows audio</small>
+            </div>
+            <input type="checkbox" id="chkForwardMediaKeys" checked />
+          </label>
+
+          <label class="toggle-row">
+            <div>
               <strong>Shared Clipboard Sync</strong>
               <small>Auto-sync copied text when crossing between Mac &amp; Windows</small>
             </div>
@@ -131,7 +142,43 @@
         </section>
 
         <section class="panel-card">
-          <h2>Mouse, Trackpad &amp; Edge Feel</h2>
+          <h2>MacBook Trackpad Gestures (on Windows)</h2>
+
+          <label class="toggle-row">
+            <div>
+              <strong>3-Finger Click / Tap → Middle Click</strong>
+              <small>Middle-click tabs/links &amp; hold 3 fingers to drag/pan in 3D apps</small>
+            </div>
+            <input type="checkbox" id="chkThreeFingerMiddle" checked />
+          </label>
+
+          <label class="toggle-row">
+            <div>
+              <strong>3-Finger Swipe ↑ / ↓ → Win+Tab / Esc</strong>
+              <small>Swipe Up opens Windows Task View; Swipe Down dismisses with Esc</small>
+            </div>
+            <input type="checkbox" id="chkThreeFingerSwipe" checked />
+          </label>
+
+          <label class="toggle-row">
+            <div>
+              <strong>Suppress macOS Mission Control on Windows</strong>
+              <small>Prevent Mac Mission Control from opening while cursor is on Windows</small>
+            </div>
+            <input type="checkbox" id="chkSuppressMissionControl" checked />
+          </label>
+        </section>
+
+        <section class="panel-card">
+          <h2>Mouse, Scroll &amp; Edge Transition</h2>
+
+          <label class="toggle-row">
+            <div>
+              <strong>Lock to Screen While Dragging</strong>
+              <small>Prevent accidental screen switching while holding a mouse button</small>
+            </div>
+            <input type="checkbox" id="chkLockWhileDragging" checked />
+          </label>
 
           <label class="toggle-row">
             <div>
@@ -139,6 +186,14 @@
               <small>Reverse scroll direction when using Mac trackpad/mouse on Windows</small>
             </div>
             <input type="checkbox" id="chkInvertScroll" />
+          </label>
+
+          <label class="toggle-row">
+            <div>
+              <strong>Wrap-Around Outer Edges</strong>
+              <small>Loop cursor from far-right screen edge back to far-left screen edge</small>
+            </div>
+            <input type="checkbox" id="chkWrapAround" />
           </label>
 
           <div class="slider-group">
@@ -155,6 +210,22 @@
               <strong id="lblScrollSpeed">1.00×</strong>
             </div>
             <input type="range" id="rngScrollSpeed" min="0.3" max="3.0" step="0.1" value="1.0" />
+          </div>
+
+          <div class="slider-group">
+            <div class="slider-header">
+              <span>Corner Dead-Zone Barrier</span>
+              <strong id="lblCornerBarrier">0 px</strong>
+            </div>
+            <input type="range" id="rngCornerBarrier" min="0" max="150" step="5" value="0" />
+          </div>
+
+          <div class="slider-group">
+            <div class="slider-header">
+              <span>Edge Snap &amp; Portal Tolerance</span>
+              <strong id="lblEdgeTolerance">18 px</strong>
+            </div>
+            <input type="range" id="rngEdgeTolerance" min="4" max="60" step="2" value="18" />
           </div>
         </section>
 

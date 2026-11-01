@@ -630,8 +630,11 @@ class MultiControlAgent:
         in_cooldown = (now - self._last_transition_ts) < 0.05
 
         # Case 1: Cursor is currently on Mac
+        drag_lock = self.engine.settings.lock_to_screen_while_dragging
         if not self.mac_ctrl.remote_active:
-            allow_transition = not (self.screen_locked or is_dragging or in_cooldown)
+            allow_transition = not (
+                self.screen_locked or (drag_lock and is_dragging) or in_cooldown
+            )
 
             res = self.engine.step_from_native(
                 cur_device_id=self.device_id,
@@ -686,7 +689,7 @@ class MultiControlAgent:
         # Do not jump back to Mac while dragging a window/selection on Windows or during 50ms cooldown
         lock_to_remote = (
             self.screen_locked
-            or bool(self._remote_buttons_held)
+            or (drag_lock and bool(self._remote_buttons_held))
             or in_cooldown
         )
         allowed_devices = (
@@ -888,6 +891,14 @@ class MultiControlAgent:
 
         if msg_type == "cluster_state":
             self.engine.update_from_dict(data)
+            if self.mac_ctrl is not None:
+                s = self.engine.settings
+                self.mac_ctrl.update_feature_flags(
+                    three_finger_middle_click=s.three_finger_middle_click,
+                    three_finger_swipe_windows=s.three_finger_swipe_windows,
+                    suppress_mac_mission_control=s.suppress_mac_mission_control,
+                    forward_media_keys=s.forward_media_keys,
+                )
             devices = data.get("devices", [])
             online_set: Set[str] = {self.device_id}
             new_candidates: Dict[str, List[Tuple[str, int]]] = {}
