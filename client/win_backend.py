@@ -17,7 +17,7 @@ import ctypes
 from ctypes import wintypes
 import logging
 import sys
-from typing import List, Set, Tuple
+from typing import Dict, List, Set, Tuple
 
 from layout_engine import DisplayRect
 
@@ -35,6 +35,8 @@ if IS_WINDOWS:
 
     # Enable Per-Monitor DPI Awareness V2 (-4) before any display API calls
     try:
+        user32.SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+        user32.SetProcessDpiAwarenessContext.restype = wintypes.BOOL
         user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
     except Exception:
         try:
@@ -80,7 +82,8 @@ if IS_WINDOWS:
     CF_UNICODETEXT = 13
     GMEM_MOVEABLE = 0x0002
 
-    ULONG_PTR = ctypes.WINTYPE_ULONG_PTR if hasattr(ctypes, "WINTYPE_ULONG_PTR") else ctypes.c_size_t
+    # Exact pointer-sized unsigned integer on 32-bit and 64-bit Windows
+    ULONG_PTR = wintypes.WPARAM
 
     class MOUSEINPUT(ctypes.Structure):
         _fields_ = [
@@ -137,6 +140,40 @@ if IS_WINDOWS:
         ctypes.POINTER(wintypes.RECT),
         wintypes.LPARAM,
     )
+
+    # Explicit Win32 ctypes signatures (prevents 64-bit HMONITOR/HANDLE truncation)
+    user32.EnumDisplayMonitors.argtypes = [
+        wintypes.HDC,
+        ctypes.POINTER(wintypes.RECT),
+        MONITORENUMPROC,
+        wintypes.LPARAM,
+    ]
+    user32.EnumDisplayMonitors.restype = wintypes.BOOL
+    user32.GetMonitorInfoW.argtypes = [
+        wintypes.HMONITOR,
+        ctypes.POINTER(MONITORINFOEXW),
+    ]
+    user32.GetMonitorInfoW.restype = wintypes.BOOL
+    user32.GetSystemMetrics.argtypes = [ctypes.c_int]
+    user32.GetSystemMetrics.restype = ctypes.c_int
+    user32.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]
+    user32.SetCursorPos.restype = wintypes.BOOL
+    user32.MapVirtualKeyW.argtypes = [wintypes.UINT, wintypes.UINT]
+    user32.MapVirtualKeyW.restype = wintypes.UINT
+    user32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
+    user32.SendInput.restype = wintypes.UINT
+
+    if shcore is not None:
+        try:
+            shcore.GetDpiForMonitor.argtypes = [
+                wintypes.HMONITOR,
+                ctypes.c_int,
+                ctypes.POINTER(wintypes.UINT),
+                ctypes.POINTER(wintypes.UINT),
+            ]
+            shcore.GetDpiForMonitor.restype = ctypes.c_long
+        except Exception:
+            pass
 
     # Clipboard ctypes signatures
     kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
@@ -199,9 +236,12 @@ def get_win_displays(device_id: str, device_name: str) -> List[DisplayRect]:
                 try:
                     dpi_x = wintypes.UINT(96)
                     dpi_y = wintypes.UINT(96)
-                    if shcore.GetDpiForMonitor(
-                        hmonitor, 0, ctypes.byref(dpi_x), ctypes.byref(dpi_y)
-                    ) == 0:
+                    if (
+                        shcore.GetDpiForMonitor(
+                            hmonitor, 0, ctypes.byref(dpi_x), ctypes.byref(dpi_y)
+                        )
+                        == 0
+                    ):
                         scale = round(float(dpi_x.value) / 96.0, 2)
                 except Exception:
                     pass
@@ -216,8 +256,14 @@ def get_win_displays(device_id: str, device_name: str) -> List[DisplayRect]:
     raw_monitors.sort(key=lambda m: (0 if m[4] else 1, m[0], m[1]))
 
     displays: List[DisplayRect] = []
-    for idx, (left, top, width, height, is_primary, dev_str, scale) in enumerate(raw_monitors):
-        label = f"Windows Main ({dev_str})" if is_primary else f"Windows Display {idx + 1} ({dev_str})"
+    for idx, (left, top, width, height, is_primary, dev_str, scale) in enumerate(
+        raw_monitors
+    ):
+        label = (
+            f"Windows Main ({dev_str})"
+            if is_primary
+            else f"Windows Display {idx + 1} ({dev_str})"
+        )
         displays.append(
             DisplayRect(
                 id=f"{device_id}:{idx}",
@@ -291,7 +337,7 @@ class WinInputInjector:
     """Injects low-latency mouse and keyboard events on Windows via Win32 SendInput."""
 
     def __init__(self) -> None:
-        self._held_keys: Set[Tuple[int, int]] = set()
+        self._held_keys: Dict[int, int] = {}  # vk_code -> flags
         self._held_buttons: Set[int] = set()
         self._last_x: int = 0
         self._last_y: int = 0
@@ -307,15 +353,16 @@ class WinInputInjector:
 
     def move_cursor(self, x: int, y: int) -> None:
         """Move Windows cursor to exact OS pixel coordinate `(x, y)`."""
-        self._last_x = int(x)
-        self._last_y = int(y)
+        ix, iy = int(x), int(y)
+        self._last_x = ix
+        self._last_y = iy
         if not IS_WINDOWS:
             return
 
         # Normalize to [0..65535] across the entire Windows Virtual Desktop
         vx, vy, vw, vh = self._virtual_screen_bounds()
-        norm_x = int(round(((x - vx) * 65535.0) / max(1, vw - 1)))
-        norm_y = int(round(((y - vy) * 65535.0) / max(1, vh - 1)))
+        norm_x = int(round(((ix - vx) * 65535.0) / max(1, vw - 1)))
+        norm_y = int(round(((iy - vy) * 65535.0) / max(1, vh - 1)))
         norm_x = max(0, min(65535, norm_x))
         norm_y = max(0, min(65535, norm_y))
 
@@ -428,17 +475,17 @@ class WinInputInjector:
             return
 
         is_down = bool(state == 1)
+        if not is_down and vk_code in self._held_keys:
+            flags = self._held_keys.pop(vk_code)
+        elif is_down:
+            self._held_keys[vk_code] = flags
+
         scan_code = int(user32.MapVirtualKeyW(vk_code, MAPVK_VK_TO_VSC))
         dw_flags = 0
         if flags & 1:
             dw_flags |= KEYEVENTF_EXTENDEDKEY
         if not is_down:
             dw_flags |= KEYEVENTF_KEYUP
-
-        if is_down:
-            self._held_keys.add((vk_code, flags))
-        else:
-            self._held_keys.discard((vk_code, flags))
 
         inp = INPUT()
         inp.type = INPUT_KEYBOARD
@@ -460,7 +507,7 @@ class WinInputInjector:
                 pass
         self._held_buttons.clear()
 
-        for vk, flags in list(self._held_keys):
+        for vk, flags in list(self._held_keys.items()):
             try:
                 self.key_event(vk, 0, flags)
             except Exception:
@@ -471,6 +518,6 @@ class WinInputInjector:
         """Called when cursor transitions from Windows back to Mac."""
         self.release_all()
         if IS_WINDOWS:
-            # Tuck Windows cursor discreetly at bottom-right corner so it doesn't clutter the screen
+            # Park Windows cursor cleanly at right edge vertical center (away from taskbar & close buttons)
             vx, vy, vw, vh = self._virtual_screen_bounds()
-            self.move_cursor(vx + vw - 2, vy + vh - 2)
+            self.move_cursor(vx + vw - 1, vy + (vh // 2))

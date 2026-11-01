@@ -464,6 +464,15 @@ async def ws_agent_endpoint(websocket: WebSocket):
                         except Exception:
                             pass
 
+            elif msg_type == "leave_screen":
+                target_id = msg.get("target_id")
+                for other_id, other_ws in list(hub.agent_sockets.items()):
+                    if other_id != device_id and (not target_id or other_id == target_id):
+                        try:
+                            await other_ws.send_text(json.dumps({"type": "leave_screen"}))
+                        except Exception:
+                            pass
+
     except WebSocketDisconnect:
         pass
     except Exception as exc:
@@ -638,9 +647,9 @@ async def download_client_zip(request: Request):
 
         run_win = (
             "@echo off\r\n"
-            "cd /d \"%~dp0\"\r\n"
+            'cd /d "%~dp0"\r\n'
             "if exist venv\\Scripts\\pythonw.exe (\r\n"
-            "  start \"\" venv\\Scripts\\pythonw.exe multicontrol_agent.py\r\n"
+            '  start /B "" venv\\Scripts\\pythonw.exe multicontrol_agent.py\r\n'
             ") else (\r\n"
             "  python multicontrol_agent.py\r\n"
             ")\r\n"

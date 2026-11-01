@@ -10,7 +10,7 @@ Responsibilities:
      go to Windows.
   4. Warp the Mac cursor to the exact entry coordinate and restore local control
      seamlessly when the cursor crosses back from Windows to Mac.
-  5. Read/write macOS clipboard via pbcopy/pbpaste or NSPasteboard.
+  5. Read/write macOS clipboard via pbcopy/pbpaste.
 """
 
 from __future__ import annotations
@@ -107,7 +107,11 @@ def get_mac_displays(device_id: str, device_name: str) -> List[DisplayRect]:
             pass
 
         is_primary = (d_id == main_id)
-        label = "Mac Built-in / Main Display" if is_primary else f"Mac External Display {idx + 1}"
+        label = (
+            "Mac Built-in / Main Display"
+            if is_primary
+            else f"Mac External Display {idx + 1}"
+        )
         displays.append(
             DisplayRect(
                 id=f"{device_id}:{idx}",
@@ -195,7 +199,7 @@ class MacInputController:
 
     def __init__(
         self,
-        on_mouse_move: Callable[[float, float, float, float], None],
+        on_mouse_move: Callable[[float, float, float, float, bool], None],
         on_mouse_button: Callable[[int, int], None],
         on_mouse_scroll: Callable[[float, float, bool], None],
         on_key_event: Callable[[int, int], None],
@@ -214,12 +218,13 @@ class MacInputController:
         self._cursor_hidden: bool = False
         self._park_pos: Tuple[float, float] = (500.0, 500.0)
         self._pressed_modifiers: Set[int] = set()
+        self._local_modifiers_down: Set[int] = set()
+        self._local_buttons_down: Set[int] = set()
         self._tap = None
         self._run_loop = None
         self._thread: Optional[threading.Thread] = None
         self._running = False
         self._ignore_next_warp_until: float = 0.0
-        self._awaiting_park_warp: bool = False
         self._cgs_lib = None
         self._cgs_cid: int = 0
         self._init_cgs_cursor_api()
@@ -269,7 +274,6 @@ class MacInputController:
             self._cgs_lib = cg
             self._cgs_cid = cid
 
-            # Remove 250ms warp suppression delay so warping cursor never drops delta events
             try:
                 src = Quartz.CGEventSourceCreate(
                     Quartz.kCGEventSourceStateCombinedSessionState
@@ -458,8 +462,12 @@ class MacInputController:
                 )
                 loc = Quartz.CGEventGetLocation(event)
                 ox, oy = float(loc.x), float(loc.y)
+                is_dragging = (
+                    event_type != Quartz.kCGEventMouseMoved
+                    or bool(self._local_buttons_down)
+                )
 
-                self.on_mouse_move(ox, oy, dx, dy)
+                self.on_mouse_move(ox, oy, dx, dy, is_dragging)
                 if self.remote_active:
                     Quartz.CGAssociateMouseAndMouseCursorPosition(False)
                     if Quartz.CGCursorIsVisible():
@@ -483,8 +491,33 @@ class MacInputController:
                     self.on_emergency_return()
                     return None
 
-            # If cursor is currently on Mac, let macOS handle all clicks/scrolls/keys normally
+            # Track local mouse buttons & modifiers when cursor is on Mac
             if not self.remote_active:
+                if event_type == Quartz.kCGEventLeftMouseDown:
+                    self._local_buttons_down.add(1)
+                elif event_type == Quartz.kCGEventLeftMouseUp:
+                    self._local_buttons_down.discard(1)
+                elif event_type == Quartz.kCGEventRightMouseDown:
+                    self._local_buttons_down.add(2)
+                elif event_type == Quartz.kCGEventRightMouseUp:
+                    self._local_buttons_down.discard(2)
+                elif event_type == Quartz.kCGEventOtherMouseDown:
+                    self._local_buttons_down.add(3)
+                elif event_type == Quartz.kCGEventOtherMouseUp:
+                    self._local_buttons_down.discard(3)
+                elif event_type == Quartz.kCGEventFlagsChanged:
+                    keycode = int(
+                        Quartz.CGEventGetIntegerValueField(
+                            event, Quartz.kCGKeyboardEventKeycode
+                        )
+                    )
+                    flags = int(Quartz.CGEventGetFlags(event))
+                    if keycode in MODIFIER_KEYCODE_MASKS:
+                        dev_mask, std_mask = MODIFIER_KEYCODE_MASKS[keycode]
+                        if (flags & dev_mask) or (flags & std_mask):
+                            self._local_modifiers_down.add(keycode)
+                        else:
+                            self._local_modifiers_down.discard(keycode)
                 return event
 
             # 3. Remote is Active: intercept buttons, scroll, and keys and send to Windows!
@@ -506,7 +539,6 @@ class MacInputController:
                         event, Quartz.kCGMouseEventButtonNumber
                     )
                 )
-                # macOS button 2 = middle (3), 3 = back (4), 4 = forward (5)
                 mapped_btn = 3 if btn_num == 2 else min(5, btn_num + 1)
                 self.on_mouse_button(mapped_btn, 1)
                 return None
@@ -585,6 +617,11 @@ class MacInputController:
                         is_down = False
                     else:
                         is_down = keycode not in self._pressed_modifiers
+
+                    # If modifier was pressed on Mac before entering remote mode, let Mac receive its release
+                    if not is_down and keycode in self._local_modifiers_down:
+                        self._local_modifiers_down.discard(keycode)
+                        return event
 
                     if is_down:
                         self._pressed_modifiers.add(keycode)

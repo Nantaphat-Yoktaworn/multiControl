@@ -9,9 +9,11 @@ Features:
   - Exchanges UDP candidate endpoints for sub-millisecond Direct P2P UDP input
     streaming between Mac and Windows, with automatic fallback to Server UDP Relay
     and WebSocket relay if a firewall blocks direct UDP.
+  - Strict sequence deduplication & reliable state-packet delivery so clicks/keys
+    are never duplicated or stuck.
   - Executes the 2D Virtual Canvas edge-transition engine locally on Mac for
     instantaneous, pixel-accurate cursor handoff between Mac and Windows.
-  - Synchronizes clipboard text automatically on screen transition.
+  - Synchronizes clipboard text asynchronously on screen transition.
   - Provides a macOS Menu Bar / Windows System Tray icon.
 """
 
@@ -19,25 +21,25 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from collections import deque
 import json
 import logging
 import os
 import platform
 import socket
-import struct
 import sys
 import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Deque, Dict, List, Optional, Set, Tuple
 
 # Ensure local imports work regardless of working directory
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from layout_engine import DisplayRect, LayoutSettings, VirtualCanvasEngine
+from layout_engine import DisplayRect, VirtualCanvasEngine
 from protocol import (
     ENTER_Screen_STRUCT,
     KEY_Event_STRUCT,
@@ -73,7 +75,6 @@ def detect_os_type() -> str:
 def get_local_ipv4_addresses() -> List[str]:
     """Discover all local non-loopback IPv4 addresses (LAN + Tailscale)."""
     ips: List[str] = []
-    # Probe outbound routes to LAN and Tailscale
     for probe_target in ("192.168.1.100", "100.64.0.10", "8.8.8.8"):
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -90,12 +91,25 @@ def get_local_ipv4_addresses() -> List[str]:
         hostname = socket.gethostname()
         for info in socket.getaddrinfo(hostname, None, socket.AF_INET):
             ip = info[4][0]
-            if ip and not ip.startswith("127.") and not ip.startswith("169.254.") and ip not in ips:
+            if (
+                ip
+                and not ip.startswith("127.")
+                and not ip.startswith("169.254.")
+                and not ip.startswith("172.")
+                and ip not in ips
+            ):
                 ips.append(ip)
     except Exception:
         pass
 
     return ips
+
+
+def re_sanitize(name: str) -> str:
+    return (
+        "".join(c.lower() if c.isalnum() else "-" for c in name).strip("-")[:20]
+        or "node"
+    )
 
 
 def load_or_create_device_id(config_path: Path) -> Tuple[str, dict]:
@@ -109,7 +123,7 @@ def load_or_create_device_id(config_path: Path) -> Tuple[str, dict]:
 
     if not cfg.get("device_id"):
         os_prefix = detect_os_type()
-        short_host = re_sanitize( platform.node() or os_prefix )
+        short_host = re_sanitize(platform.node() or os_prefix)
         cfg["device_id"] = f"{os_prefix}-{short_host}-{uuid.uuid4().hex[:6]}"
         try:
             config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -120,8 +134,12 @@ def load_or_create_device_id(config_path: Path) -> Tuple[str, dict]:
     return cfg["device_id"], cfg
 
 
-def re_sanitize(name: str) -> str:
-    return "".join(c.lower() if c.isalnum() else "-" for c in name).strip("-")[:20] or "node"
+def _seq_is_newer(seq: int, last_seq: int) -> bool:
+    """Modular uint32 sequence comparison."""
+    if last_seq < 0:
+        return True
+    diff = (seq - last_seq) & 0xFFFFFFFF
+    return 0 < diff < 0x80000000
 
 
 class MultiControlAgent:
@@ -148,7 +166,8 @@ class MultiControlAgent:
         self.engine = VirtualCanvasEngine()
         self.online_devices: Set[str] = {self.device_id}
         self.peer_udp_candidates: Dict[str, List[Tuple[str, int]]] = {}
-        self.best_peer_addr: Dict[str, Tuple[str, int, float]] = {}  # device_id -> (ip, port, rtt_ms)
+        # device_id -> (ip, port, rtt_ms, updated_monotonic)
+        self.best_peer_addr: Dict[str, Tuple[str, int, float, float]] = {}
         self.server_relay_addr: Optional[Tuple[str, int]] = None
 
         # Active cursor tracking on Virtual Canvas
@@ -159,16 +178,22 @@ class MultiControlAgent:
         self.cur_os_x: int = 400
         self.cur_os_y: int = 400
         self.screen_locked: bool = False
+        self._remote_buttons_held: Set[int] = set()
+        self._last_transition_ts: float = 0.0
 
-        # Networking state
+        # Networking & deduplication state
         self._udp_sock: Optional[socket.socket] = None
         self._seq: int = 0
-        self._last_rx_seq: int = -1
+        self._seen_seqs: Deque[int] = deque(maxlen=512)
+        self._seen_seq_set: Set[int] = set()
+        self._last_move_seq: int = -1
+        self._last_rx_ts: float = 0.0
         self._ws = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._running = True
         self._last_telemetry_ts: float = 0.0
         self._last_clipboard_text: str = ""
+        self._clip_lock = threading.Lock()
 
         # Platform-specific controllers
         self.mac_ctrl = None
@@ -236,7 +261,7 @@ class MultiControlAgent:
         ]
 
     # ------------------------------------------------------------------
-    # Clipboard Access
+    # Asynchronous Clipboard Access (Never Blocks CGEventTap / UDPRecvLoop)
     # ------------------------------------------------------------------
     def read_local_clipboard(self) -> str:
         if self.os_type == "darwin":
@@ -250,30 +275,40 @@ class MultiControlAgent:
     def write_local_clipboard(self, text: str) -> None:
         if not text:
             return
-        self._last_clipboard_text = text
-        if self.os_type == "darwin":
-            from mac_backend import set_mac_clipboard
-            set_mac_clipboard(text)
-        elif self.os_type == "windows":
-            from win_backend import set_win_clipboard
-            set_win_clipboard(text)
+
+        def _worker() -> None:
+            with self._clip_lock:
+                self._last_clipboard_text = text
+                if self.os_type == "darwin":
+                    from mac_backend import set_mac_clipboard
+                    set_mac_clipboard(text)
+                elif self.os_type == "windows":
+                    from win_backend import set_win_clipboard
+                    set_win_clipboard(text)
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def push_local_clipboard(self) -> None:
         if not self.engine.settings.clipboard_sync:
             return
-        text = self.read_local_clipboard()
-        if text and text != self._last_clipboard_text:
-            self._last_clipboard_text = text
-            self._send_ws_json(
-                {
-                    "type": "clipboard_sync",
-                    "source_id": self.device_id,
-                    "text": text[:65536],
-                }
-            )
+
+        def _worker() -> None:
+            with self._clip_lock:
+                text = self.read_local_clipboard()
+                if text and text != self._last_clipboard_text:
+                    self._last_clipboard_text = text
+                    self._send_ws_json(
+                        {
+                            "type": "clipboard_sync",
+                            "source_id": self.device_id,
+                            "text": text[:65536],
+                        }
+                    )
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     # ------------------------------------------------------------------
-    # UDP Socket (Direct P2P + Server Relay)
+    # UDP Socket (Direct P2P + Server Relay + Sequence Deduplication)
     # ------------------------------------------------------------------
     def _setup_udp_socket(self) -> int:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -308,7 +343,7 @@ class MultiControlAgent:
                 while True:
                     try:
                         data, addr = sock.recvfrom(2048)
-                    except (BlockingIOError, InterruptedError):
+                    except (BlockingIOError, InterruptedError, ConnectionResetError):
                         break
                     self._handle_udp_packet(data, addr)
             except Exception as exc:
@@ -316,13 +351,42 @@ class MultiControlAgent:
 
     def _next_seq(self) -> int:
         self._seq = (self._seq + 1) & 0xFFFFFFFF
+        if self._seq == 0:
+            self._seq = 1
         return self._seq
 
-    def _send_udp_to_target(self, target_device_id: str, pkt_type: int, payload: bytes = b"") -> None:
+    def _record_rx_seq(self, seq: int) -> bool:
         """
-        Send a binary packet to `target_device_id` via:
-          1. Direct P2P UDP if verified reachable
-          2. Server UDP Relay (port 8766) if available
+        Return True if `seq` is new and record it in the ring buffer.
+        Return False if `seq` was already processed (duplicate packet).
+        """
+        if seq in self._seen_seq_set:
+            return False
+        if len(self._seen_seqs) == self._seen_seqs.maxlen:
+            oldest = self._seen_seqs.popleft()
+            self._seen_seq_set.discard(oldest)
+        self._seen_seqs.append(seq)
+        self._seen_seq_set.add(seq)
+        return True
+
+    def _reset_rx_seq_window(self) -> None:
+        self._seen_seqs.clear()
+        self._seen_seq_set.clear()
+        self._last_move_seq = -1
+
+    def _send_udp_to_target(
+        self,
+        target_device_id: str,
+        pkt_type: int,
+        payload: bytes = b"",
+        reliable: bool = False,
+    ) -> None:
+        """
+        Send a binary packet to `target_device_id`.
+        When `reliable=True` (for ENTER_SCREEN, LEAVE_SCREEN, MOUSE_BUTTON, KEY_EVENT),
+        the same sequence-numbered packet is sent over both the direct P2P path and the
+        Server UDP Relay so single-packet Wi-Fi loss never drops a key/button state change,
+        while the receiver's sequence filter ensures it executes at most once.
         """
         if self._udp_sock is None:
             return
@@ -330,24 +394,30 @@ class MultiControlAgent:
         seq = self._next_seq()
         raw = pack_packet(pkt_type, seq, self.token_digest, payload)
 
+        now = time.monotonic()
         peer_info = self.best_peer_addr.get(target_device_id)
+        sent_direct = False
+
         if peer_info is not None:
-            ip, port, _ = peer_info
-            try:
-                self._udp_sock.sendto(raw, (ip, port))
-                return
-            except Exception:
-                pass
+            ip, port, _, ts = peer_info
+            if now - ts <= 8.0:
+                try:
+                    self._udp_sock.sendto(raw, (ip, port))
+                    sent_direct = True
+                except Exception:
+                    pass
+            else:
+                self.best_peer_addr.pop(target_device_id, None)
 
-        # Also try first candidate directly + server UDP relay
-        candidates = self.peer_udp_candidates.get(target_device_id, [])
-        for ip, port in candidates[:1]:
-            try:
-                self._udp_sock.sendto(raw, (ip, port))
-            except Exception:
-                pass
+        if not sent_direct:
+            candidates = self.peer_udp_candidates.get(target_device_id, [])
+            for ip, port in candidates[:1]:
+                try:
+                    self._udp_sock.sendto(raw, (ip, port))
+                except Exception:
+                    pass
 
-        if self.server_relay_addr is not None:
+        if (not sent_direct or reliable) and self.server_relay_addr is not None:
             try:
                 self._udp_sock.sendto(raw, self.server_relay_addr)
             except Exception:
@@ -360,7 +430,9 @@ class MultiControlAgent:
 
         now_ns = time.time_ns()
         ping_payload = PING_STRUCT.pack(now_ns) + self.device_id.encode("utf-8")
-        ping_pkt = pack_packet(PacketType.PING, self._next_seq(), self.token_digest, ping_payload)
+        ping_pkt = pack_packet(
+            PacketType.PING, self._next_seq(), self.token_digest, ping_payload
+        )
 
         for dev_id, candidates in list(self.peer_udp_candidates.items()):
             if dev_id == self.device_id:
@@ -409,25 +481,41 @@ class MultiControlAgent:
                 sent_ns = PING_STRUCT.unpack_from(payload, 0)[0]
                 peer_id = payload[PING_STRUCT.size :].decode("utf-8", errors="ignore")
                 rtt_ms = max(0.05, (time.time_ns() - sent_ns) / 1_000_000.0)
+                now = time.monotonic()
                 prev = self.best_peer_addr.get(peer_id)
-                if prev is None or rtt_ms <= prev[2] + 1.5:
-                    self.best_peer_addr[peer_id] = (addr[0], addr[1], rtt_ms)
-                    self.tray.update_status(
-                        status_text=self.tray.status_text,
-                        transport_text=f"Direct P2P UDP ({addr[0]}:{addr[1]}, {rtt_ms:.1f}ms)",
-                    )
+                if prev is None or (now - prev[3] > 5.0) or rtt_ms <= prev[2] + 1.5:
+                    addr_changed = prev is None or (prev[0], prev[1]) != (addr[0], addr[1])
+                    self.best_peer_addr[peer_id] = (addr[0], addr[1], rtt_ms, now)
+                    if addr_changed:
+                        self.tray.update_status(
+                            status_text=self.tray.status_text,
+                            transport_text=f"Direct P2P UDP ({addr[0]}:{addr[1]}, {rtt_ms:.1f}ms)",
+                        )
             return
 
         # Receiver side (Windows PC): execute incoming input events!
         if self.win_injector is None:
             return
 
+        now = time.monotonic()
+        if now - self._last_rx_ts > 1.5:
+            self._reset_rx_seq_window()
+        self._last_rx_ts = now
+
         if pkt_type == PacketType.MOUSE_MOVE and len(payload) >= MOUSE_Move_STRUCT.size:
+            if not self._record_rx_seq(seq):
+                return
+            if not _seq_is_newer(seq, self._last_move_seq):
+                return
+            self._last_move_seq = seq
             x, y = MOUSE_Move_STRUCT.unpack_from(payload, 0)
             self.win_injector.move_cursor(x, y)
             return
 
         if pkt_type == PacketType.ENTER_SCREEN and len(payload) >= ENTER_Screen_STRUCT.size:
+            if not self._record_rx_seq(seq):
+                return
+            self._last_move_seq = seq
             x, y = ENTER_Screen_STRUCT.unpack_from(payload, 0)
             self.win_injector.move_cursor(x, y)
             self.tray.update_status(
@@ -437,6 +525,9 @@ class MultiControlAgent:
             return
 
         if pkt_type == PacketType.LEAVE_SCREEN:
+            if not self._record_rx_seq(seq):
+                return
+            self._reset_rx_seq_window()
             self.win_injector.leave_screen()
             self.tray.update_status(
                 status_text="Standby — Cursor on Mac",
@@ -446,12 +537,16 @@ class MultiControlAgent:
             return
 
         if pkt_type == PacketType.MOUSE_BUTTON and len(payload) >= MOUSE_Button_STRUCT.size:
+            if not self._record_rx_seq(seq):
+                return
             btn, state, x, y = MOUSE_Button_STRUCT.unpack_from(payload, 0)
             self.win_injector.move_cursor(x, y)
             self.win_injector.mouse_button(btn, state)
             return
 
         if pkt_type == PacketType.MOUSE_SCROLL and len(payload) >= MOUSE_Scroll_STRUCT.size:
+            if not self._record_rx_seq(seq):
+                return
             dx, dy, is_pixel = MOUSE_Scroll_STRUCT.unpack_from(payload, 0)
             self.win_injector.mouse_scroll(
                 dx,
@@ -463,6 +558,8 @@ class MultiControlAgent:
             return
 
         if pkt_type == PacketType.KEY_EVENT and len(payload) >= KEY_Event_STRUCT.size:
+            if not self._record_rx_seq(seq):
+                return
             vk, state, flags = KEY_Event_STRUCT.unpack_from(payload, 0)
             self.win_injector.key_event(vk, state, flags)
             return
@@ -478,8 +575,12 @@ class MultiControlAgent:
         prev_target = self.active_device_id
         self.active_device_id = self.device_id
         self.screen_locked = False
+        self._remote_buttons_held.clear()
+        self._last_transition_ts = time.monotonic()
 
-        mac_displays = [d for d in self.engine.displays.values() if d.device_id == self.device_id]
+        mac_displays = [
+            d for d in self.engine.displays.values() if d.device_id == self.device_id
+        ]
         if mac_displays:
             primary = next((d for d in mac_displays if d.primary), mac_displays[0])
             cx = primary.os_x + primary.os_width / 2.0
@@ -491,7 +592,8 @@ class MultiControlAgent:
             self.mac_ctrl.leave_remote_mode(500.0, 500.0)
 
         if prev_target != self.device_id:
-            self._send_udp_to_target(prev_target, PacketType.LEAVE_SCREEN)
+            self._send_udp_to_target(prev_target, PacketType.LEAVE_SCREEN, reliable=True)
+            self._send_ws_json({"type": "leave_screen", "target_id": prev_target})
 
         self.tray.update_status(
             status_text="Controlling Mac",
@@ -506,24 +608,30 @@ class MultiControlAgent:
         if self.mac_ctrl is not None:
             self.mac_ctrl.screen_locked = self.screen_locked
         target_label = "Mac" if self.active_device_id == self.device_id else "Windows PC"
-        state_label = f"Locked to {target_label}" if self.screen_locked else f"Controlling {target_label}"
+        state_label = (
+            f"Locked to {target_label}"
+            if self.screen_locked
+            else f"Controlling {target_label}"
+        )
         self.tray.update_status(
             status_text=state_label,
             state="remote" if self.active_device_id != self.device_id else "connected",
             screen_locked=self.screen_locked,
         )
-        logger.info("Screen Lock toggled: %s", self.screen_locked)
 
-    def _on_mac_mouse_move(self, ox: float, oy: float, dx: float, dy: float) -> None:
+    def _on_mac_mouse_move(
+        self, ox: float, oy: float, dx: float, dy: float, is_dragging: bool = False
+    ) -> None:
         """Called on every mouse movement on the Mac."""
         if self.mac_ctrl is None:
             return
 
+        now = time.monotonic()
+        in_cooldown = (now - self._last_transition_ts) < 0.05
+
         # Case 1: Cursor is currently on Mac
         if not self.mac_ctrl.remote_active:
-            if self.screen_locked:
-                self._emit_cursor_telemetry(ox, oy)
-                return
+            allow_transition = not (self.screen_locked or is_dragging or in_cooldown)
 
             res = self.engine.step_from_native(
                 cur_device_id=self.device_id,
@@ -532,6 +640,7 @@ class MultiControlAgent:
                 dx=dx,
                 dy=dy,
                 online_devices=self.online_devices,
+                allow_transition=allow_transition,
             )
             if res is None:
                 return
@@ -545,12 +654,19 @@ class MultiControlAgent:
             if res.device_changed and res.display.device_id != self.device_id:
                 # Seamlessly transition from Mac -> Windows!
                 self.active_device_id = res.display.device_id
+                self._remote_buttons_held.clear()
+                self._last_transition_ts = now
                 self.mac_ctrl.enter_remote_mode()
-                self.push_local_clipboard()
+
+                # Send ENTER_SCREEN UDP packet immediately first, then sync clipboard in background
                 payload = ENTER_Screen_STRUCT.pack(res.os_x, res.os_y)
                 self._send_udp_to_target(
-                    self.active_device_id, PacketType.ENTER_SCREEN, payload
+                    self.active_device_id,
+                    PacketType.ENTER_SCREEN,
+                    payload,
+                    reliable=True,
                 )
+                self.push_local_clipboard()
                 self.tray.update_status(
                     status_text=f"Controlling {res.display.device_name}",
                     state="remote",
@@ -567,8 +683,14 @@ class MultiControlAgent:
             return
 
         # Case 2: Cursor is currently controlling Windows (remote_active == True)
+        # Do not jump back to Mac while dragging a window/selection on Windows or during 50ms cooldown
+        lock_to_remote = (
+            self.screen_locked
+            or bool(self._remote_buttons_held)
+            or in_cooldown
+        )
         allowed_devices = (
-            {self.active_device_id} if self.screen_locked else self.online_devices
+            {self.active_device_id} if lock_to_remote else self.online_devices
         )
         res = self.engine.step_virtual_delta(
             cur_display_id=self.active_display_id,
@@ -592,8 +714,13 @@ class MultiControlAgent:
 
         if self.active_device_id == self.device_id:
             # Cursor crossed back from Windows -> Mac at exact entry coordinate!
+            self._remote_buttons_held.clear()
+            self._last_transition_ts = now
             self.mac_ctrl.leave_remote_mode(res.os_x, res.os_y)
-            self._send_udp_to_target(prev_device_id, PacketType.LEAVE_SCREEN)
+            self._send_udp_to_target(
+                prev_device_id, PacketType.LEAVE_SCREEN, reliable=True
+            )
+            self._send_ws_json({"type": "leave_screen", "target_id": prev_device_id})
             self.tray.update_status(
                 status_text="Controlling Mac",
                 state="connected",
@@ -606,7 +733,6 @@ class MultiControlAgent:
                 res.os_y,
             )
         else:
-            # Still on Windows (or moved between two Windows monitors): send fast UDP move!
             payload = MOUSE_Move_STRUCT.pack(res.os_x, res.os_y)
             self._send_udp_to_target(
                 self.active_device_id, PacketType.MOUSE_MOVE, payload
@@ -617,13 +743,24 @@ class MultiControlAgent:
     def _on_mac_mouse_button(self, button: int, state: int) -> None:
         if self.active_device_id == self.device_id:
             return
+        if state == 1:
+            self._remote_buttons_held.add(button)
+        else:
+            self._remote_buttons_held.discard(button)
         payload = MOUSE_Button_STRUCT.pack(button, state, self.cur_os_x, self.cur_os_y)
-        self._send_udp_to_target(self.active_device_id, PacketType.MOUSE_BUTTON, payload)
+        self._send_udp_to_target(
+            self.active_device_id,
+            PacketType.MOUSE_BUTTON,
+            payload,
+            reliable=True,
+        )
 
     def _on_mac_mouse_scroll(self, dx: float, dy: float, is_continuous: bool) -> None:
         if self.active_device_id == self.device_id:
             return
-        payload = MOUSE_Scroll_STRUCT.pack(float(dx), float(dy), 1 if is_continuous else 0)
+        payload = MOUSE_Scroll_STRUCT.pack(
+            float(dx), float(dy), 1 if is_continuous else 0
+        )
         self._send_udp_to_target(self.active_device_id, PacketType.MOUSE_SCROLL, payload)
 
     def _on_mac_key_event(self, mac_keycode: int, state: int) -> None:
@@ -638,10 +775,15 @@ class MultiControlAgent:
             return
         win_vk, flags = mapped
         payload = KEY_Event_STRUCT.pack(win_vk, state, flags)
-        self._send_udp_to_target(self.active_device_id, PacketType.KEY_EVENT, payload)
+        self._send_udp_to_target(
+            self.active_device_id,
+            PacketType.KEY_EVENT,
+            payload,
+            reliable=True,
+        )
 
     def _emit_cursor_telemetry(self, os_x: float, os_y: float) -> None:
-        """Send lightweight cursor telemetry (~25 Hz) so Web UI shows live cursor radar."""
+        """Send lightweight cursor telemetry (~25 Hz) to the server."""
         now = time.monotonic()
         if now - self._last_telemetry_ts < 0.04:
             return
@@ -756,6 +898,8 @@ class MultiControlAgent:
                     continue
                 if dev.get("online"):
                     online_set.add(dev_id)
+                else:
+                    self.best_peer_addr.pop(dev_id, None)
                 uport = int(dev.get("udp_port", 8767))
                 cands = [(ip, uport) for ip in dev.get("ips", []) if ip]
                 new_candidates[dev_id] = cands
@@ -763,7 +907,6 @@ class MultiControlAgent:
             self.online_devices = online_set
             self.peer_udp_candidates = new_candidates
 
-            # If the device we were controlling went offline, immediately return to Mac
             if (
                 self.os_type == "darwin"
                 and self.active_device_id != self.device_id
@@ -784,11 +927,17 @@ class MultiControlAgent:
                     self.write_local_clipboard(text)
             return
 
-        if msg_type == "force_return_mac":
+        if msg_type in ("force_return_mac", "leave_screen"):
             if self.os_type == "darwin":
                 self.force_return_to_mac()
             elif self.win_injector is not None:
+                self._reset_rx_seq_window()
                 self.win_injector.leave_screen()
+                self.tray.update_status(
+                    status_text="Standby — Cursor on Mac",
+                    state="connected",
+                )
+                self.push_local_clipboard()
             return
 
         if msg_type == "refresh_displays":
@@ -808,15 +957,16 @@ class MultiControlAgent:
         self._setup_udp_socket()
 
         if self.os_type == "darwin" and self.mac_ctrl is not None:
-            # Initialize displays & park position
             self.get_local_displays()
             started = self.mac_ctrl.start()
             if started:
-                logger.info("macOS Quartz EventTap active! Emergency return hotkey: Ctrl+Opt+Esc")
+                logger.info(
+                    "macOS Quartz EventTap active! Emergency return hotkey: Ctrl+Opt+Esc"
+                )
             else:
                 logger.warning(
                     "macOS EventTap waiting for Accessibility permission. "
-                    "Grant permission in System Settings -> Privacy & Security -> Accessibility, then restart."
+                    "Grant permission in System Settings -> Privacy & Security -> Accessibility."
                 )
 
         ws_thread = threading.Thread(
@@ -850,7 +1000,9 @@ class MultiControlAgent:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="MultiControl Desktop Agent (Mac & Windows)")
+    parser = argparse.ArgumentParser(
+        description="MultiControl Desktop Agent (Mac & Windows)"
+    )
     parser.add_argument(
         "--config",
         default=str(SCRIPT_DIR / "config.json"),

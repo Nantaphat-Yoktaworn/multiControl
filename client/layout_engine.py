@@ -8,7 +8,7 @@ and scaled to match physical monitor dimensions on the user's desk.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 
@@ -226,7 +226,7 @@ class VirtualCanvasEngine:
         for d in device_displays:
             if d.contains_os(ox, oy, eps=2.0):
                 return d
-        # Fallback: find nearest display on that device
+
         def dist_sq(d: DisplayRect) -> float:
             cx = max(d.os_x, min(ox, d.os_right))
             cy = max(d.os_y, min(oy, d.os_bottom))
@@ -264,6 +264,7 @@ class VirtualCanvasEngine:
             return None
 
         tol = max(2.0, self.settings.edge_snap_tolerance_px)
+        inset = 3.0  # Inset inside target display to prevent border ping-pong
 
         candidates = [
             d
@@ -277,8 +278,8 @@ class VirtualCanvasEngine:
         # 1. Direct hit: target point is directly inside another display
         for d in candidates:
             if d.contains_canvas(target_cx, target_cy, eps=1.0):
-                ecx = max(d.canvas_x + 1.0, min(target_cx, d.canvas_right - 1.0))
-                ecy = max(d.canvas_y + 1.0, min(target_cy, d.canvas_bottom - 1.0))
+                ecx = max(d.canvas_x + inset, min(target_cx, d.canvas_right - inset))
+                ecy = max(d.canvas_y + inset, min(target_cy, d.canvas_bottom - inset))
                 return d, ecx, ecy
 
         # 2. Edge-proximity transition: check which boundary was crossed
@@ -294,9 +295,9 @@ class VirtualCanvasEngine:
             if crossed_right:
                 edge_gap = abs(d.canvas_x - cur_display.canvas_right)
                 if edge_gap <= tol and (d.canvas_y <= target_cy <= d.canvas_bottom):
-                    overshoot = max(1.0, target_cx - cur_display.canvas_right)
-                    ecx = min(d.canvas_right - 1.0, d.canvas_x + overshoot)
-                    ecy = max(d.canvas_y + 1.0, min(target_cy, d.canvas_bottom - 1.0))
+                    overshoot = max(inset, target_cx - cur_display.canvas_right)
+                    ecx = min(d.canvas_right - inset, d.canvas_x + overshoot)
+                    ecy = max(d.canvas_y + inset, min(target_cy, d.canvas_bottom - inset))
                     if best is None or edge_gap < best[0]:
                         best = (edge_gap, d, ecx, ecy)
 
@@ -304,9 +305,9 @@ class VirtualCanvasEngine:
             if crossed_left:
                 edge_gap = abs(cur_display.canvas_x - d.canvas_right)
                 if edge_gap <= tol and (d.canvas_y <= target_cy <= d.canvas_bottom):
-                    overshoot = max(1.0, cur_display.canvas_x - target_cx)
-                    ecx = max(d.canvas_x + 1.0, d.canvas_right - overshoot)
-                    ecy = max(d.canvas_y + 1.0, min(target_cy, d.canvas_bottom - 1.0))
+                    overshoot = max(inset, cur_display.canvas_x - target_cx)
+                    ecx = max(d.canvas_x + inset, d.canvas_right - overshoot)
+                    ecy = max(d.canvas_y + inset, min(target_cy, d.canvas_bottom - inset))
                     if best is None or edge_gap < best[0]:
                         best = (edge_gap, d, ecx, ecy)
 
@@ -314,9 +315,9 @@ class VirtualCanvasEngine:
             if crossed_bottom:
                 edge_gap = abs(d.canvas_y - cur_display.canvas_bottom)
                 if edge_gap <= tol and (d.canvas_x <= target_cx <= d.canvas_right):
-                    overshoot = max(1.0, target_cy - cur_display.canvas_bottom)
-                    ecx = max(d.canvas_x + 1.0, min(target_cx, d.canvas_right - 1.0))
-                    ecy = min(d.canvas_bottom - 1.0, d.canvas_y + overshoot)
+                    overshoot = max(inset, target_cy - cur_display.canvas_bottom)
+                    ecx = max(d.canvas_x + inset, min(target_cx, d.canvas_right - inset))
+                    ecy = min(d.canvas_bottom - inset, d.canvas_y + overshoot)
                     if best is None or edge_gap < best[0]:
                         best = (edge_gap, d, ecx, ecy)
 
@@ -324,9 +325,9 @@ class VirtualCanvasEngine:
             if crossed_top:
                 edge_gap = abs(cur_display.canvas_y - d.canvas_bottom)
                 if edge_gap <= tol and (d.canvas_x <= target_cx <= d.canvas_right):
-                    overshoot = max(1.0, cur_display.canvas_y - target_cy)
-                    ecx = max(d.canvas_x + 1.0, min(target_cx, d.canvas_right - 1.0))
-                    ecy = max(d.canvas_y + 1.0, d.canvas_bottom - overshoot)
+                    overshoot = max(inset, cur_display.canvas_y - target_cy)
+                    ecx = max(d.canvas_x + inset, min(target_cx, d.canvas_right - inset))
+                    ecy = max(d.canvas_y + inset, d.canvas_bottom - overshoot)
                     if best is None or edge_gap < best[0]:
                         best = (edge_gap, d, ecx, ecy)
 
@@ -344,6 +345,7 @@ class VirtualCanvasEngine:
         dx: float,
         dy: float,
         online_devices: Optional[set] = None,
+        allow_transition: bool = True,
     ) -> Optional[TransitionResult]:
         """
         Given current native OS cursor `(os_x, os_y)` and hardware delta `(dx, dy)`
@@ -355,18 +357,27 @@ class VirtualCanvasEngine:
             return None
 
         cur_cx, cur_cy = cur_display.os_to_canvas(os_x, os_y)
-        # Scale delta proportionally from OS pixels to Canvas units
+        ox, oy = int(round(os_x)), int(round(os_y))
+        if not allow_transition:
+            return TransitionResult(
+                display=cur_display,
+                canvas_x=cur_cx,
+                canvas_y=cur_cy,
+                os_x=ox,
+                os_y=oy,
+                device_changed=False,
+                display_changed=False,
+            )
+
         scale_x = cur_display.canvas_width / max(1.0, cur_display.os_width)
         scale_y = cur_display.canvas_height / max(1.0, cur_display.os_height)
 
-        # Only trigger a cross-device check if near the edge of cur_display or outside
         at_left = (os_x - cur_display.os_x) <= 2.0 and dx < 0
         at_right = (cur_display.os_right - os_x) <= 2.5 and dx > 0
         at_top = (os_y - cur_display.os_y) <= 2.0 and dy < 0
         at_bottom = (cur_display.os_bottom - os_y) <= 2.5 and dy > 0
 
         if not (at_left or at_right or at_top or at_bottom):
-            ox, oy = int(round(os_x)), int(round(os_y))
             return TransitionResult(
                 display=cur_display,
                 canvas_x=cur_cx,
@@ -379,6 +390,14 @@ class VirtualCanvasEngine:
 
         target_cx = cur_cx + dx * scale_x
         target_cy = cur_cy + dy * scale_y
+        if at_left:
+            target_cx = min(target_cx, cur_display.canvas_x - max(2.5, abs(dx * scale_x)))
+        elif at_right:
+            target_cx = max(target_cx, cur_display.canvas_right + max(2.5, abs(dx * scale_x)))
+        if at_top:
+            target_cy = min(target_cy, cur_display.canvas_y - max(2.5, abs(dy * scale_y)))
+        elif at_bottom:
+            target_cy = max(target_cy, cur_display.canvas_bottom + max(2.5, abs(dy * scale_y)))
 
         adj = self.find_adjacent_target(
             cur_display, cur_cx, cur_cy, target_cx, target_cy, online_devices
@@ -396,7 +415,6 @@ class VirtualCanvasEngine:
                 display_changed=True,
             )
 
-        ox, oy = int(round(os_x)), int(round(os_y))
         return TransitionResult(
             display=cur_display,
             canvas_x=cur_cx,
@@ -419,9 +437,6 @@ class VirtualCanvasEngine:
         """
         Advance a virtual cursor currently on `cur_display_id` at `(cur_cx, cur_cy)`
         by raw delta `(dx, dy)` (when controlling a remote machine like Windows).
-        Handles moving inside the display, crossing to another display on the same
-        or different machine, or clamping firmly to the display boundary if no
-        adjacent screen exists.
         """
         cur_display = self.displays.get(cur_display_id)
         if cur_display is None:
@@ -434,7 +449,7 @@ class VirtualCanvasEngine:
         target_cx = cur_cx + dx * scale_x
         target_cy = cur_cy + dy * scale_y
 
-        if cur_display.contains_canvas(target_cx, target_cy, eps=-0.5):
+        if cur_display.contains_canvas(target_cx, target_cy, eps=0.0):
             ox, oy = cur_display.canvas_to_os(target_cx, target_cy)
             return TransitionResult(
                 display=cur_display,
@@ -446,7 +461,6 @@ class VirtualCanvasEngine:
                 display_changed=False,
             )
 
-        # Outside current display: check if an adjacent display receives it
         adj = self.find_adjacent_target(
             cur_display, cur_cx, cur_cy, target_cx, target_cy, online_devices
         )
@@ -463,7 +477,6 @@ class VirtualCanvasEngine:
                 display_changed=True,
             )
 
-        # No adjacent display: clamp cleanly inside cur_display
         clamped_cx = max(cur_display.canvas_x, min(target_cx, cur_display.canvas_right))
         clamped_cy = max(cur_display.canvas_y, min(target_cy, cur_display.canvas_bottom))
         ox, oy = cur_display.canvas_to_os(clamped_cx, clamped_cy)

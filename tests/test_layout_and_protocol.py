@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "client"))
 
 from layout_engine import DisplayRect, LayoutSettings, VirtualCanvasEngine
+from multicontrol_agent import _seq_is_newer
 from protocol import (
     PacketType,
     WIN_VK_LCONTROL,
@@ -148,6 +149,68 @@ class TestMultiControlEngine(unittest.TestCase):
         self.assertEqual(seq, 42)
         self.assertEqual(rx_digest, digest)
         self.assertEqual(payload, b"\x01\x02\x03\x04")
+
+    def test_vertical_stacked_mac_below_ultrawide_windows(self) -> None:
+        # User's real setup: Mac 1470x956 at (0, 98), Windows 3440x1440 at (-985, -1342)
+        mac = DisplayRect(
+            id="mac:0",
+            device_id="mac",
+            device_name="Mac",
+            os_type="darwin",
+            monitor_index=0,
+            name="Mac Main",
+            primary=True,
+            os_x=0.0,
+            os_y=0.0,
+            os_width=1470.0,
+            os_height=956.0,
+            canvas_x=0.0,
+            canvas_y=98.0,
+            canvas_width=1470.0,
+            canvas_height=956.0,
+        )
+        win = DisplayRect(
+            id="win:0",
+            device_id="win",
+            device_name="Win",
+            os_type="windows",
+            monitor_index=0,
+            name="Win Main",
+            primary=True,
+            os_x=0.0,
+            os_y=0.0,
+            os_width=3440.0,
+            os_height=1440.0,
+            canvas_x=-985.0,
+            canvas_y=-1342.0,
+            canvas_width=3440.0,
+            canvas_height=1440.0,
+        )
+        eng = VirtualCanvasEngine([mac, win])
+        # Push up against top edge of Mac (os_y=1.0, dy=-1.0) at horizontal center (os_x=735)
+        res = eng.step_from_native("mac", 735.0, 1.0, 0.0, -1.0, {"mac", "win"})
+        self.assertIsNotNone(res)
+        self.assertTrue(res.device_changed)
+        self.assertEqual(res.display.id, "win:0")
+        self.assertAlmostEqual(res.os_x, 1720, delta=3)
+        self.assertGreaterEqual(res.os_y, 1430)
+
+        # Drag protection blocks accidental screen switch while dragging a window on Mac
+        res_drag = eng.step_from_native(
+            "mac", 735.0, 1.0, 0.0, -5.0, {"mac", "win"}, allow_transition=False
+        )
+        self.assertIsNotNone(res_drag)
+        self.assertFalse(res_drag.device_changed)
+        self.assertEqual(res_drag.display.id, "mac:0")
+
+    def test_seq_is_newer(self) -> None:
+        self.assertTrue(_seq_is_newer(1, -1))
+        self.assertTrue(_seq_is_newer(10, 9))
+        self.assertFalse(_seq_is_newer(9, 10))
+        self.assertFalse(_seq_is_newer(10, 10))
+        # Wrap-around across uint32 boundary
+        self.assertTrue(_seq_is_newer(2, 0xFFFFFFFE))
+        self.assertFalse(_seq_is_newer(0xFFFFFFFE, 2))
 
 
 if __name__ == "__main__":

@@ -521,84 +521,99 @@
   }
 
   function drawCursorIndicators(portals) {
-    // 1. Live cursor from Mac agent (if updated in last 15 seconds)
-    const nowSec = Date.now() / 1000;
-    if (state.cursor && state.cursor.updated_at && nowSec - state.cursor.updated_at < 15) {
-      const pt = worldToScreen(state.cursor.canvas_x, state.cursor.canvas_y);
-      ctx.save();
-      ctx.fillStyle = "#10b981";
-      ctx.shadowColor = "#10b981";
-      ctx.shadowBlur = 14;
-      ctx.beginPath();
-      ctx.arc(pt.x, pt.y, 7, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = "#ffffff";
-      ctx.lineWidth = 2;
-      ctx.stroke();
-      ctx.restore();
-    }
-
-    // 2. Interactive Test Cursor Crossing Simulator
+    // Only draw simulated cursor crossing ray when "Test Cursor Crossing" mode is explicitly active
     if (simulateMode && simCursor && simCursor.disp) {
       const pt = worldToScreen(simCursor.cx, simCursor.cy);
       ctx.save();
       ctx.fillStyle = "#f43f5e";
       ctx.beginPath();
-      ctx.arc(pt.x, pt.y, 6, 0, Math.PI * 2);
+      ctx.arc(pt.x, pt.y, 5, 0, Math.PI * 2);
       ctx.fill();
-      ctx.strokeStyle = "#ffffff";
-      ctx.lineWidth = 2;
-      ctx.stroke();
 
       // Project horizontal & vertical crossing rays to any adjacent portal
       for (const p of portals) {
+        const targetDisp =
+          p.a.id === simCursor.disp.id
+            ? p.b
+            : p.b.id === simCursor.disp.id
+            ? p.a
+            : null;
+        if (!targetDisp) continue;
+
         if (p.orientation === "vertical" && simCursor.cy >= p.y1 && simCursor.cy <= p.y2) {
-          const targetDisp = p.a.id === simCursor.disp.id ? p.b : p.b.id === simCursor.disp.id ? p.a : null;
-          if (targetDisp) {
-            const portalScreen = worldToScreen(p.x1, simCursor.cy);
-            ctx.strokeStyle = "rgba(244, 63, 94, 0.75)";
-            ctx.setLineDash([4, 4]);
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.moveTo(pt.x, pt.y);
-            ctx.lineTo(portalScreen.x, portalScreen.y);
-            ctx.stroke();
+          const portalScreen = worldToScreen(p.x1, simCursor.cy);
+          ctx.strokeStyle = "rgba(244, 63, 94, 0.75)";
+          ctx.setLineDash([4, 4]);
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(pt.x, pt.y);
+          ctx.lineTo(portalScreen.x, portalScreen.y);
+          ctx.stroke();
 
-            // Compute exact OS coordinate where cursor enters targetDisp
-            const u =
-              targetDisp.canvas_x >= simCursor.disp.canvas_x
-                ? 0
-                : 1;
-            const v =
-              (simCursor.cy - targetDisp.canvas_y) /
-              Math.max(1, targetDisp.canvas_height);
-            const entryOx = Math.round(
-              targetDisp.os_x + u * (targetDisp.os_width - 1)
-            );
-            const entryOy = Math.round(
-              targetDisp.os_y + Math.max(0, Math.min(1, v)) * (targetDisp.os_height - 1)
-            );
+          const u = targetDisp.canvas_x >= simCursor.disp.canvas_x ? 0 : 1;
+          const v =
+            (simCursor.cy - targetDisp.canvas_y) /
+            Math.max(1, targetDisp.canvas_height);
+          const entryOx = Math.round(
+            targetDisp.os_x + u * (targetDisp.os_width - 1)
+          );
+          const entryOy = Math.round(
+            targetDisp.os_y + Math.max(0, Math.min(1, v)) * (targetDisp.os_height - 1)
+          );
 
-            ctx.setLineDash([]);
-            ctx.fillStyle = "#f43f5e";
-            ctx.beginPath();
-            ctx.arc(portalScreen.x, portalScreen.y, 5, 0, Math.PI * 2);
-            ctx.fill();
+          ctx.setLineDash([]);
+          ctx.fillStyle = "#0f172a";
+          ctx.strokeStyle = "#f43f5e";
+          ctx.lineWidth = 1.5;
+          const tagText = `→ Enters ${targetDisp.name} at (${entryOx}, ${entryOy})`;
+          ctx.font = "600 11px ui-monospace, SFMono-Regular, monospace";
+          const tw = ctx.measureText(tagText).width + 14;
+          ctx.beginPath();
+          ctx.roundRect(portalScreen.x + 10, portalScreen.y - 12, tw, 24, 5);
+          ctx.fill();
+          ctx.stroke();
 
-            ctx.fillStyle = "#0f172a";
-            ctx.strokeStyle = "#f43f5e";
-            ctx.lineWidth = 1.5;
-            const tagText = `→ Enters ${targetDisp.name} at (${entryOx}, ${entryOy})`;
-            ctx.font = "600 11px ui-monospace, SFMono-Regular, monospace";
-            const tw = ctx.measureText(tagText).width + 14;
-            ctx.beginPath();
-            ctx.roundRect(portalScreen.x + 10, portalScreen.y - 12, tw, 24, 5);
-            ctx.fill();
-            ctx.stroke();
+          ctx.fillStyle = "#f8fafc";
+          ctx.fillText(tagText, portalScreen.x + 17, portalScreen.y + 4);
+        } else if (
+          p.orientation === "horizontal" &&
+          simCursor.cx >= p.x1 &&
+          simCursor.cx <= p.x2
+        ) {
+          const portalScreen = worldToScreen(simCursor.cx, p.y1);
+          ctx.strokeStyle = "rgba(244, 63, 94, 0.75)";
+          ctx.setLineDash([4, 4]);
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(pt.x, pt.y);
+          ctx.lineTo(portalScreen.x, portalScreen.y);
+          ctx.stroke();
 
-            ctx.fillStyle = "#f8fafc";
-            ctx.fillText(tagText, portalScreen.x + 17, portalScreen.y + 4);
-          }
+          const u =
+            (simCursor.cx - targetDisp.canvas_x) /
+            Math.max(1, targetDisp.canvas_width);
+          const v = targetDisp.canvas_y >= simCursor.disp.canvas_y ? 0 : 1;
+          const entryOx = Math.round(
+            targetDisp.os_x + Math.max(0, Math.min(1, u)) * (targetDisp.os_width - 1)
+          );
+          const entryOy = Math.round(
+            targetDisp.os_y + v * (targetDisp.os_height - 1)
+          );
+
+          ctx.setLineDash([]);
+          ctx.fillStyle = "#0f172a";
+          ctx.strokeStyle = "#f43f5e";
+          ctx.lineWidth = 1.5;
+          const tagText = `→ Enters ${targetDisp.name} at (${entryOx}, ${entryOy})`;
+          ctx.font = "600 11px ui-monospace, SFMono-Regular, monospace";
+          const tw = ctx.measureText(tagText).width + 14;
+          ctx.beginPath();
+          ctx.roundRect(portalScreen.x - tw / 2, portalScreen.y - 30, tw, 24, 5);
+          ctx.fill();
+          ctx.stroke();
+
+          ctx.fillStyle = "#f8fafc";
+          ctx.fillText(tagText, portalScreen.x - tw / 2 + 7, portalScreen.y - 14);
         }
       }
       ctx.restore();
@@ -867,6 +882,18 @@
   document.querySelectorAll("[data-preset]").forEach((btn) => {
     btn.addEventListener("click", () => {
       const preset = btn.getAttribute("data-preset");
+      if (preset === "reset-1to1") {
+        for (const d of state.displays) {
+          d.canvas_width = d.os_width;
+          d.canvas_height = d.os_height;
+        }
+        centerCanvasView();
+        renderSelectedMonitorInspector();
+        render();
+        saveLayoutNow(true);
+        return;
+      }
+
       const macDisp = state.displays.find((d) => d.os_type === "darwin");
       const winDisp = state.displays.find((d) => d.os_type === "windows");
       if (!macDisp || !winDisp) return;
@@ -892,11 +919,6 @@
       } else if (preset === "align-bottoms") {
         const winBottom = winDisp.canvas_y + winDisp.canvas_height;
         macDisp.canvas_y = Math.round(winBottom - macDisp.canvas_height);
-      } else if (preset === "reset-1to1") {
-        for (const d of state.displays) {
-          d.canvas_width = d.os_width;
-          d.canvas_height = d.os_height;
-        }
       }
 
       centerCanvasView();

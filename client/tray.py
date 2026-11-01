@@ -7,8 +7,9 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
 import webbrowser
-from typing import Callable, Optional
+from typing import Callable, Dict, Optional
 
 logger = logging.getLogger("multicontrol.tray")
 
@@ -22,9 +23,14 @@ except ImportError:
     ImageDraw = None  # type: ignore
     HAS_TRAY = False
 
+_ICON_CACHE: Dict[str, object] = {}
+
 
 def _create_tray_image(state: str = "connected"):
-    """Draw a crisp 64x64 dual-monitor icon with status badge."""
+    """Return cached 64x64 dual-monitor icon with status badge."""
+    if state in _ICON_CACHE:
+        return _ICON_CACHE[state]
+
     img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
 
@@ -45,7 +51,6 @@ def _create_tray_image(state: str = "connected"):
         width=3,
     )
 
-    # Status dot
     colors = {
         "disconnected": (245, 158, 11, 255),  # Amber
         "connected": (34, 197, 94, 255),      # Emerald green
@@ -54,6 +59,7 @@ def _create_tray_image(state: str = "connected"):
     }
     badge_color = colors.get(state, colors["connected"])
     draw.ellipse((44, 6, 58, 20), fill=badge_color, outline=(15, 23, 42, 255), width=2)
+    _ICON_CACHE[state] = img
     return img
 
 
@@ -89,23 +95,31 @@ class TrayController:
         state: str = "connected",
         screen_locked: Optional[bool] = None,
     ) -> None:
-        self.status_text = status_text
-        if transport_text is not None:
-            self.transport_text = transport_text
-        if screen_locked is not None:
-            self.screen_locked = screen_locked
-        self._state = "locked" if self.screen_locked else state
+        new_locked = self.screen_locked if screen_locked is None else screen_locked
+        new_state = "locked" if new_locked else state
+        new_transport = self.transport_text if transport_text is None else transport_text
 
-        # On macOS, AppKit NSStatusItem/NSMenu must NEVER be mutated from background
-        # threads (doing so raises NSInternalInconsistencyException / SIGTRAP).
-        # On Windows, win32 Shell_NotifyIcon is thread-safe.
-        if HAS_TRAY and self._icon is not None and sys.platform == "win32":
-            try:
-                self._icon.icon = _create_tray_image(self._state)
-                self._icon.title = f"MultiControl — {self.status_text}"
-                self._icon.update_menu()
-            except Exception:
-                pass
+        state_changed = new_state != self._state
+        text_changed = (status_text != self.status_text) or (new_transport != self.transport_text)
+
+        self.status_text = status_text
+        self.transport_text = new_transport
+        self.screen_locked = new_locked
+        self._state = new_state
+
+        if not (state_changed or text_changed):
+            return
+
+        # Only mutate Win32 tray icon when state actually changes, and do it off the UDP hot path
+        if HAS_TRAY and self._icon is not None and sys.platform == "win32" and state_changed:
+            def _apply_win_tray() -> None:
+                try:
+                    self._icon.icon = _create_tray_image(new_state)
+                    self._icon.title = f"MultiControl — {self.status_text}"
+                except Exception:
+                    pass
+
+            threading.Thread(target=_apply_win_tray, daemon=True).start()
 
     def _open_webui(self, icon=None, item=None) -> None:
         webbrowser.open(self.web_ui_url)
@@ -159,6 +173,8 @@ class TrayController:
             return False
 
         try:
+            for st in ("disconnected", "connected", "remote", "locked"):
+                _create_tray_image(st)
             self._icon = pystray.Icon(
                 "MultiControl",
                 _create_tray_image("connected"),
