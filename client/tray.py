@@ -86,17 +86,55 @@ class TrayController:
         self.transport_text = "Mode: Handshaking"
         self.screen_locked = False
         self._state = "disconnected"
+        self._last_applied_state = ""
         self._icon: Optional[object] = None
+
+    def _sync_darwin_ui(self) -> None:
+        """Execute all macOS AppKit NSStatusItem / NSMenu mutations strictly on the main thread."""
+        if self._icon is None:
+            return
+        try:
+            menu_handle = getattr(self._icon, "_menu_handle", None)
+            if menu_handle:
+                nsmenu = menu_handle[0]
+                if nsmenu is not None and nsmenu.numberOfItems() >= 2:
+                    nsmenu.itemAtIndex_(0).setTitle_(f"● {self.status_text}")
+                    nsmenu.itemAtIndex_(1).setTitle_(f"   {self.transport_text}")
+            else:
+                self._icon.update_menu()
+
+            if self._last_applied_state != self._state:
+                self._last_applied_state = self._state
+                self._icon.icon = _create_tray_image(self._state)
+
+            self._icon.title = f"MultiControl — {self.status_text}"
+        except Exception as exc:
+            logger.debug("Darwin tray sync error: %s", exc)
+
+    def _sync_win_ui(self, state_changed: bool, text_changed: bool) -> None:
+        """Update Win32 system tray icon and menu off the UDP hot path."""
+        if self._icon is None:
+            return
+        try:
+            if state_changed and self._last_applied_state != self._state:
+                self._last_applied_state = self._state
+                self._icon.icon = _create_tray_image(self._state)
+            if state_changed or text_changed:
+                self._icon.title = f"MultiControl — {self.status_text}"
+                self._icon.update_menu()
+        except Exception as exc:
+            logger.debug("Win32 tray sync error: %s", exc)
 
     def update_status(
         self,
         status_text: str,
         transport_text: Optional[str] = None,
-        state: str = "connected",
+        state: Optional[str] = None,
         screen_locked: Optional[bool] = None,
     ) -> None:
         new_locked = self.screen_locked if screen_locked is None else screen_locked
-        new_state = "locked" if new_locked else state
+        base_state = (self._state if self._state != "disconnected" else "connected") if state is None else state
+        new_state = "locked" if new_locked else base_state
         new_transport = self.transport_text if transport_text is None else transport_text
 
         state_changed = new_state != self._state
@@ -110,16 +148,21 @@ class TrayController:
         if not (state_changed or text_changed):
             return
 
-        # Only mutate Win32 tray icon when state actually changes, and do it off the UDP hot path
-        if HAS_TRAY and self._icon is not None and sys.platform == "win32" and state_changed:
-            def _apply_win_tray() -> None:
-                try:
-                    self._icon.icon = _create_tray_image(new_state)
-                    self._icon.title = f"MultiControl — {self.status_text}"
-                except Exception:
-                    pass
+        if not HAS_TRAY or self._icon is None:
+            return
 
-            threading.Thread(target=_apply_win_tray, daemon=True).start()
+        if sys.platform == "darwin":
+            try:
+                from PyObjCTools import AppHelper
+                AppHelper.callAfter(self._sync_darwin_ui)
+            except Exception as exc:
+                logger.debug("Failed to schedule Darwin tray update: %s", exc)
+        elif sys.platform == "win32":
+            threading.Thread(
+                target=self._sync_win_ui,
+                args=(state_changed, text_changed),
+                daemon=True,
+            ).start()
 
     def _open_webui(self, icon=None, item=None) -> None:
         webbrowser.open(self.web_ui_url)
@@ -177,11 +220,29 @@ class TrayController:
                 _create_tray_image(st)
             self._icon = pystray.Icon(
                 "MultiControl",
-                _create_tray_image("connected"),
-                "MultiControl",
+                _create_tray_image(self._state if self._state in _ICON_CACHE else "connected"),
+                f"MultiControl — {self.status_text}",
                 menu=self._build_menu(),
             )
-            self._icon.run()
+
+            def _setup(icon) -> None:
+                if sys.platform == "darwin":
+                    try:
+                        from PyObjCTools import AppHelper
+
+                        def _init_on_main() -> None:
+                            icon.visible = True
+                            self._sync_darwin_ui()
+
+                        AppHelper.callAfter(_init_on_main)
+                        return
+                    except Exception:
+                        pass
+                icon.visible = True
+                if sys.platform == "win32":
+                    self._sync_win_ui(True, True)
+
+            self._icon.run(setup=_setup)
             return True
         except Exception as exc:
             logger.warning("System tray unavailable (%s), continuing in console mode.", exc)
