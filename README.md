@@ -16,6 +16,9 @@
 3. **Windows Receiver Agent (`client/win_backend.py` & `client/multicontrol_agent.py`)**
    - Uses 64-bit Win32 `ctypes` `SendInput` + Per-Monitor DPI Awareness V2 (`DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2`) for hardware-level cursor positioning, clicks, smooth pixel/wheel scrolling, and scan-code + Virtual-Key keyboard injection.
    - Parks the Windows cursor at the right-edge vertical midpoint when returning to Mac so it never triggers the Windows 11 taskbar corner hover.
+   - **System Integrity & UIPI Bypass (`client/service_watchdog.py`):** Runs under `NT AUTHORITY\SYSTEM` in Session 0. Uses `CreateProcessAsUserW` with a duplicated `winlogon.exe` primary token to spawn the agent into the interactive console session (`Session 2`, etc.) with **System Integrity**, allowing input injection to bypass Windows UIPI restrictions on the **Lock Screen / PIN Prompt (`LogonUI.exe`)**, UAC dialogs, and cold-boot screens.
+   - **Secure Lock Workstation Interceptor:** Automatically detects `Win + L` (sent as Mac `Control + L` with default modifier swapping) and calls `user32.LockWorkStation()` directly, bypassing Windows security restrictions that block synthetic `SendInput(Win+L)`.
+   - **Authentic Hardware Scancodes:** Maps keys using `MapVirtualKeyW` and sends `KEYEVENTF_SCANCODE` (`0x0008`) so Windows Credential Provider reliably accepts keystrokes in secure PIN and password fields.
 4. **Hybrid P2P UDP + Reliable Dual-Path Transport (`client/protocol.py`)**
    - Streams high-frequency input packets directly peer-to-peer over UDP (`<0.5ms` on LAN) with automatic fallback to the Server UDP Relay (`8766/udp`).
    - Uses a 512-entry rolling sequence deduplication window and dual-path reliable delivery for state transitions (`ENTER_SCREEN`, `LEAVE_SCREEN`, `MOUSE_BUTTON`, `KEY_EVENT`) so clicks and keys are never dropped, duplicated, or stuck.
@@ -64,12 +67,14 @@ irm http://192.168.1.100:8765/install.ps1 | iex
 
 - Installs the agent into `%USERPROFILE%\.multicontrol`, places the **MultiControl** icon in your Windows System Tray, and configures auto-start with Highest Privileges so mouse and keyboard control work seamlessly on the **Windows Lock Screen & PIN/Password entry screen** (`Winlogon`).
 
-#### 🛡️ Optional: Boot Service Mode (Cold-Boot & Pre-Logon Remote Control)
-If you want to control Windows immediately after a fresh reboot/cold boot *before* any user logs in, run:
+#### 🛡️ Recommended: Boot Service Mode (Lock Screen, PIN Entry & Cold Boot Remote Control)
+To control Windows on the Lock Screen / PIN entry prompt (`LogonUI.exe`) and after a fresh reboot/cold boot *before* any user logs in, run:
 ```powershell
 irm http://192.168.1.100:8765/install-service.ps1 | iex
 ```
-This registers `MultiControlService` as a boot-time background service running under `NT AUTHORITY\SYSTEM`.
+*(Over Tailscale: `irm http://100.64.0.10:8765/install-service.ps1 | iex`)*
+
+This registers `MultiControlService` as a boot-time background service running under `NT AUTHORITY\SYSTEM`. The service watchdog uses `CreateProcessAsUser` to spawn the session worker inside the active console session with System Integrity, completely bypassing Windows UIPI limitations.
 
 ---
 
@@ -78,12 +83,15 @@ This registers `MultiControlService` as a boot-time background service running u
 | Input / Gesture | Behavior When Cursor is on **Windows** | Behavior When Cursor is on **Mac** |
 | :--- | :--- | :--- |
 | **`Ctrl + Option + Esc`** | **Emergency Return to Mac:** Immediately unlocks the Mac cursor and brings control back to Mac | — |
+| **Mac `Control + L`** *(or `Win + L`)* | **Lock Windows Workstation:** Directly calls `user32.LockWorkStation()` to lock Windows (since Windows blocks synthetic software `SendInput` on Win+L) | Native macOS behavior |
+| **Mac `Control + D`** *(or `Win + D`)* | **Show Desktop:** Minimizes/restores all windows | Native macOS behavior |
+| **Mac `Control + P`** *(or `Win + P`)* | **Display Project Settings:** Opens Windows display projection panel | Native macOS behavior |
 | **3-Finger Click or Tap** *(Trackpad)* | **Middle Mouse Click (`Button 3`):** Supports both middle-click (close/open browser tabs) and 3-finger click-and-hold drag (panning in CAD/3D apps); suppresses macOS Look Up popup | Normal macOS 3-finger behavior |
 | **3-Finger Swipe Up** *(Trackpad)* | Opens **Windows Task View (`Win + Tab`)** and suppresses macOS Mission Control | Opens **macOS Mission Control** |
 | **3-Finger Swipe Down** *(Trackpad)* | Presses **`Esc`** on Windows to dismiss Task View | Normal macOS App Exposé / close Mission Control |
 | **Volume Up / Down / Mute** *(F10–F12)* | Controls **Windows PC Volume & Mute** (local Mac volume is unchanged) | Controls **Mac Volume & Mute** |
 | **Play / Pause / Next / Previous** | Controls **Windows Media Playback** | Controls **Mac Media Playback** |
-| **Swap Mac `⌘ Cmd` ↔ Windows `Ctrl`** | Enabled by default (toggleable in Web UI) so `⌘C`, `⌘V`, `⌘Z`, `⌘A`, `⌘F` work naturally on Windows | Native macOS `⌘ Cmd` |
+| **Swap Mac `⌘ Cmd` ↔ Windows `Ctrl`** | Enabled by default (toggleable in Web UI) so `⌘C`, `⌘V`, `⌘Z`, `⌘A`, `⌘F` work naturally on Windows; Mac `Control` maps to Windows Key (`Win`) | Native macOS `⌘ Cmd` |
 | **Shared Clipboard Sync** | Automatically syncs plain-text clipboard in the background whenever the cursor crosses between Mac and Windows | Syncs back to Mac on return |
 
 ---
@@ -114,14 +122,15 @@ All three machines are configured to start MultiControl automatically on boot/lo
     launchctl kickstart -k gui/$(id -u)/com.multicontrol.agent
     ```
 - **Windows PC (`windows-pc`):**
-  - **User Agent (Highest Privileges):** Scheduled Task `MultiControlAgent` (`AtLogOn`, Interactive session, Highest privileges).
+  - **Boot Service Watchdog (`MultiControlService` - Recommended):** Scheduled Task running at startup under `NT AUTHORITY\SYSTEM` in Session 0. Automatically manages the interactive console session worker with System Integrity for Lock/PIN screens, UAC, and cold boot.
     ```powershell
-    Stop-ScheduledTask -TaskName MultiControlAgent; Stop-Process -Name pythonw -Force -ErrorAction SilentlyContinue; Start-ScheduledTask -TaskName MultiControlAgent
-    ```
-  - **Boot Service (SYSTEM):** Scheduled Task `MultiControlService` (`AtStartup`, SYSTEM).
-    ```powershell
+    # Restart the watchdog service and its interactive session worker:
     Stop-ScheduledTask -TaskName MultiControlService; Stop-Process -Name pythonw -Force -ErrorAction SilentlyContinue; Start-ScheduledTask -TaskName MultiControlService
+    # View watchdog status and session worker spawn logs:
+    Get-Content C:\ProgramData\MultiControl\watchdog.log -Tail 20
+    Get-Content C:\ProgramData\MultiControl\agent.log -Tail 20
     ```
+  - **User-Level Agent (`MultiControlAgent`):** Scheduled Task running at user logon under the interactive user account. (Disabled when Service Mode is used to prevent port conflicts).
 
 ---
 

@@ -294,12 +294,12 @@
           </p>
           <div style="margin-top: 10px; border-top: 1px dashed rgba(255,255,255,0.15); padding-top: 10px;">
             <div class="install-title">
-              <span class="os-badge" style="background: rgba(46, 204, 113, 0.2); color: #2ecc71; border: 1px solid rgba(46, 204, 113, 0.4);">🛡️ Optional: Boot Service Mode (Runs as SYSTEM at Cold Boot)</span>
+              <span class="os-badge" style="background: rgba(46, 204, 113, 0.2); color: #2ecc71; border: 1px solid rgba(46, 204, 113, 0.4);">🛡️ Recommended: Boot Service Mode (Lock Screen, PIN &amp; Cold Boot)</span>
               <button class="btn-copy" data-copy-target="cmdWinServiceInstall">Copy</button>
             </div>
             <pre id="cmdWinServiceInstall">irm http://192.168.1.100:8765/install-service.ps1 | iex</pre>
             <p class="install-note">
-              Runs as a background SYSTEM service at Windows boot before any user logs in, enabling remote login after a fresh restart.
+              Runs as a SYSTEM Service Watchdog at Windows boot, launching into the interactive console session with System Integrity to bypass UIPI and enable remote PIN/password entry, UAC control, and cold-boot login.
             </p>
           </div>
         </div>
