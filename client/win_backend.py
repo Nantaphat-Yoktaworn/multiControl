@@ -173,6 +173,8 @@ if IS_WINDOWS:
     user32.MapVirtualKeyW.restype = wintypes.UINT
     user32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
     user32.SendInput.restype = wintypes.UINT
+    user32.LockWorkStation.argtypes = []
+    user32.LockWorkStation.restype = wintypes.BOOL
 
     if shcore is not None:
         try:
@@ -893,6 +895,27 @@ class WinInputInjector:
             flags = self._held_keys.pop(vk_code)
         elif is_down:
             self._held_keys[vk_code] = flags
+
+        # Check for Win + L lock workstation shortcut
+        # Windows security intentionally blocks synthetic SendInput from triggering Win+L;
+        # call user32.LockWorkStation() directly when Win + L is pressed.
+        WIN_VK_LWIN = 0x5B
+        WIN_VK_RWIN = 0x5C
+        ctrl_held = any(k in self._held_keys for k in (0x11, 0xA2, 0xA3))
+        alt_held = any(k in self._held_keys for k in (0x12, 0xA4, 0xA5))
+        win_held = (WIN_VK_LWIN in self._held_keys or WIN_VK_RWIN in self._held_keys)
+        l_held = (0x4C in self._held_keys or ord('L') in self._held_keys)
+
+        if is_down and not ctrl_held and not alt_held:
+            if (vk_code in (0x4C, ord('L'), ord('l')) and win_held) or (vk_code in (WIN_VK_LWIN, WIN_VK_RWIN) and l_held):
+                logger.info("Win + L shortcut detected; locking workstation via LockWorkStation()")
+                self.release_all()
+                if hasattr(user32, "LockWorkStation") and user32.LockWorkStation:
+                    try:
+                        user32.LockWorkStation()
+                    except Exception as exc:
+                        logger.error("LockWorkStation call failed: %s", exc)
+                return
 
         scan_code = int(user32.MapVirtualKeyW(vk_code, MAPVK_VK_TO_VSC))
         dw_flags = 0

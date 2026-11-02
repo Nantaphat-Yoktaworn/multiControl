@@ -87,6 +87,22 @@ class TestWinInputInjector(unittest.TestCase):
             self.assertEqual(inp_obj.union.ki.wScan, 0x02)
             self.assertTrue(inp_obj.union.ki.dwFlags & 0x0008)  # KEYEVENTF_SCANCODE
 
+    @patch("win_backend.IS_WINDOWS", True)
+    @patch("win_backend.user32")
+    def test_win_l_triggers_lock_workstation(self, mock_user) -> None:
+        mock_user.MapVirtualKeyW.return_value = 0
+        mock_user.LockWorkStation.return_value = True
+
+        with patch.object(self.injector, "ensure_input_desktop", return_value=True):
+            # Press Win key (0x5B)
+            self.injector.key_event(0x5B, 1)
+            mock_user.LockWorkStation.assert_not_called()
+
+            # Press 'L' (0x4C)
+            self.injector.key_event(0x4C, 1)
+            mock_user.LockWorkStation.assert_called_once()
+            self.assertEqual(len(self.injector._held_keys), 0)  # release_all called
+
 
 if __name__ == "__main__":
     unittest.main()
