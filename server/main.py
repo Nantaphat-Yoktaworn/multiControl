@@ -811,7 +811,7 @@ try {{
 
 Write-Host "[4/4] Registering MultiControl Boot Service (Runs as SYSTEM on Boot)..." -ForegroundColor Yellow
 
-$Action = New-ScheduledTaskAction -Execute "$InstallDir\\venv\\Scripts\\pythonw.exe" -Argument "`"$InstallDir\\multicontrol_agent.py`" --no-tray" -WorkingDirectory $InstallDir
+$Action = New-ScheduledTaskAction -Execute "$InstallDir\\venv\\Scripts\\pythonw.exe" -Argument "`"$InstallDir\\service_watchdog.py`"" -WorkingDirectory $InstallDir
 $Trigger = New-ScheduledTaskTrigger -AtStartup
 $Principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
 $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Days 0) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
