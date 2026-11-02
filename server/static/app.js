@@ -1085,6 +1085,10 @@
     document.getElementById(
       "cmdWinInstall"
     ).textContent = `irm http://${host}:${port}/install.ps1 | iex`;
+    const elWinService = document.getElementById("cmdWinServiceInstall");
+    if (elWinService) {
+      elWinService.textContent = `irm http://${host}:${port}/install-service.ps1 | iex`;
+    }
   }
 
   document.getElementById("btnOpenConnectModal").addEventListener("click", () => {

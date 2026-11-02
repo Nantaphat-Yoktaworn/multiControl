@@ -1006,6 +1006,7 @@ class MultiControlAgent:
             self.mac_ctrl.stop()
         if self.win_injector is not None:
             self.win_injector.leave_screen()
+            self.win_injector.close()
         self.tray.stop()
         os._exit(0)
 

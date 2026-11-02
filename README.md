@@ -55,14 +55,21 @@ curl -fsSL http://192.168.1.100:8765/install.sh | bash
 
 ### 3. Install & Run on Your Windows PC (Target Receiver)
 
-Run this 1-line installer in **Windows PowerShell**:
+Run this 1-line installer in **Windows PowerShell** (Run as Administrator recommended for Lock/PIN screen injection):
 
 ```powershell
 irm http://192.168.1.100:8765/install.ps1 | iex
 ```
 *(Over Tailscale: `irm http://100.64.0.10:8765/install.ps1 | iex`)*
 
-- Installs the agent into `%USERPROFILE%\.multicontrol`, places the **MultiControl** icon in your Windows System Tray, and configures auto-start on login.
+- Installs the agent into `%USERPROFILE%\.multicontrol`, places the **MultiControl** icon in your Windows System Tray, and configures auto-start with Highest Privileges so mouse and keyboard control work seamlessly on the **Windows Lock Screen & PIN/Password entry screen** (`Winlogon`).
+
+#### 🛡️ Optional: Boot Service Mode (Cold-Boot & Pre-Logon Remote Control)
+If you want to control Windows immediately after a fresh reboot/cold boot *before* any user logs in, run:
+```powershell
+irm http://192.168.1.100:8765/install-service.ps1 | iex
+```
+This registers `MultiControlService` as a boot-time background service running under `NT AUTHORITY\SYSTEM`.
 
 ---
 
@@ -107,10 +114,13 @@ All three machines are configured to start MultiControl automatically on boot/lo
     launchctl kickstart -k gui/$(id -u)/com.multicontrol.agent
     ```
 - **Windows PC (`windows-pc`):**
-  - Scheduled Task: `MultiControlAgent` (`AtLogOn`, Interactive session, Highest privileges) + Startup folder hook.
-  - Restart manually (PowerShell):
+  - **User Agent (Highest Privileges):** Scheduled Task `MultiControlAgent` (`AtLogOn`, Interactive session, Highest privileges).
     ```powershell
     Stop-ScheduledTask -TaskName MultiControlAgent; Stop-Process -Name pythonw -Force -ErrorAction SilentlyContinue; Start-ScheduledTask -TaskName MultiControlAgent
+    ```
+  - **Boot Service (SYSTEM):** Scheduled Task `MultiControlService` (`AtStartup`, SYSTEM).
+    ```powershell
+    Stop-ScheduledTask -TaskName MultiControlService; Stop-Process -Name pythonw -Force -ErrorAction SilentlyContinue; Start-ScheduledTask -TaskName MultiControlService
     ```
 
 ---

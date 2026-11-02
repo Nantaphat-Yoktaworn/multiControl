@@ -17,7 +17,9 @@ import ctypes
 from ctypes import wintypes
 import logging
 import sys
-from typing import Dict, List, Set, Tuple
+import threading
+import time
+from typing import Dict, List, Optional, Set, Tuple
 
 from layout_engine import DisplayRect
 
@@ -25,9 +27,18 @@ logger = logging.getLogger("multicontrol.win")
 
 IS_WINDOWS = sys.platform == "win32"
 
+user32 = None
+kernel32 = None
+advapi32 = None
+shcore = None
+
 if IS_WINDOWS:
     user32 = ctypes.windll.user32
     kernel32 = ctypes.windll.kernel32
+    try:
+        advapi32 = ctypes.windll.advapi32
+    except Exception:
+        advapi32 = None
     try:
         shcore = ctypes.windll.shcore
     except Exception:
@@ -193,6 +204,129 @@ if IS_WINDOWS:
     user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
     user32.SetClipboardData.restype = wintypes.HANDLE
 
+    # Desktop & Security Token ctypes structures
+    class LUID(ctypes.Structure):
+        _fields_ = [
+            ("LowPart", wintypes.DWORD),
+            ("HighPart", wintypes.LONG),
+        ]
+
+    class LUID_AND_ATTRIBUTES(ctypes.Structure):
+        _fields_ = [
+            ("Luid", LUID),
+            ("Attributes", wintypes.DWORD),
+        ]
+
+    class TOKEN_PRIVILEGES(ctypes.Structure):
+        _fields_ = [
+            ("PrivilegeCount", wintypes.DWORD),
+            ("Privileges", LUID_AND_ATTRIBUTES * 1),
+        ]
+
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.c_size_t),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", wintypes.LONG),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", wintypes.WCHAR * 260),
+        ]
+
+    HDESK = wintypes.HANDLE
+
+    # Desktop API signatures
+    user32.OpenInputDesktop.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    user32.OpenInputDesktop.restype = HDESK
+    user32.SetThreadDesktop.argtypes = [HDESK]
+    user32.SetThreadDesktop.restype = wintypes.BOOL
+    user32.CloseDesktop.argtypes = [HDESK]
+    user32.CloseDesktop.restype = wintypes.BOOL
+    user32.GetThreadDesktop.argtypes = [wintypes.DWORD]
+    user32.GetThreadDesktop.restype = HDESK
+    user32.GetUserObjectInformationW.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    user32.GetUserObjectInformationW.restype = wintypes.BOOL
+
+    # Process & Token API signatures
+    kernel32.GetCurrentProcess.argtypes = []
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.GetCurrentThreadId.argtypes = []
+    kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+    kernel32.GetLastError.argtypes = []
+    kernel32.GetLastError.restype = wintypes.DWORD
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+    kernel32.Process32FirstW.restype = wintypes.BOOL
+    kernel32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+    kernel32.Process32NextW.restype = wintypes.BOOL
+
+    if hasattr(kernel32, "ProcessIdToSessionId"):
+        kernel32.ProcessIdToSessionId.argtypes = [
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        kernel32.ProcessIdToSessionId.restype = wintypes.BOOL
+
+    if hasattr(kernel32, "WTSGetActiveConsoleSessionId"):
+        kernel32.WTSGetActiveConsoleSessionId.argtypes = []
+        kernel32.WTSGetActiveConsoleSessionId.restype = wintypes.DWORD
+
+    if advapi32 is not None:
+        advapi32.OpenProcessToken.argtypes = [
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.HANDLE),
+        ]
+        advapi32.OpenProcessToken.restype = wintypes.BOOL
+
+        advapi32.LookupPrivilegeValueW.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.LPCWSTR,
+            ctypes.POINTER(LUID),
+        ]
+        advapi32.LookupPrivilegeValueW.restype = wintypes.BOOL
+
+        advapi32.AdjustTokenPrivileges.argtypes = [
+            wintypes.HANDLE,
+            wintypes.BOOL,
+            ctypes.POINTER(TOKEN_PRIVILEGES),
+            wintypes.DWORD,
+            ctypes.POINTER(TOKEN_PRIVILEGES),
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        advapi32.AdjustTokenPrivileges.restype = wintypes.BOOL
+
+        advapi32.DuplicateTokenEx.argtypes = [
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            ctypes.c_void_p,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.POINTER(wintypes.HANDLE),
+        ]
+        advapi32.DuplicateTokenEx.restype = wintypes.BOOL
+
+        advapi32.ImpersonateLoggedOnUser.argtypes = [wintypes.HANDLE]
+        advapi32.ImpersonateLoggedOnUser.restype = wintypes.BOOL
+
+        advapi32.RevertToSelf.argtypes = []
+        advapi32.RevertToSelf.restype = wintypes.BOOL
+
 
 def get_win_displays(device_id: str, device_name: str) -> List[DisplayRect]:
     """Enumerate all attached Windows monitors with true pixel bounds and DPI scale."""
@@ -341,6 +475,226 @@ class WinInputInjector:
         self._held_buttons: Set[int] = set()
         self._last_x: int = 0
         self._last_y: int = 0
+        self._thread_local = threading.local()
+        self._privilege_enabled = False
+        self._access_denied_warned = False
+
+    def _enable_se_debug_privilege(self) -> bool:
+        """Enable SeDebugPrivilege for current process so it can query winlogon.exe token."""
+        if not IS_WINDOWS or advapi32 is None:
+            return False
+        if self._privilege_enabled:
+            return True
+        try:
+            h_token = wintypes.HANDLE()
+            TOKEN_ADJUST_PRIVILEGES = 0x0020
+            TOKEN_QUERY = 0x0008
+            SE_PRIVILEGE_ENABLED = 0x00000002
+
+            if not advapi32.OpenProcessToken(
+                kernel32.GetCurrentProcess(),
+                TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+                ctypes.byref(h_token),
+            ):
+                return False
+
+            try:
+                luid = LUID()
+                if not advapi32.LookupPrivilegeValueW(None, "SeDebugPrivilege", ctypes.byref(luid)):
+                    return False
+
+                tp = TOKEN_PRIVILEGES()
+                tp.PrivilegeCount = 1
+                tp.Privileges[0].Luid = luid
+                tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED
+
+                advapi32.AdjustTokenPrivileges(
+                    h_token, False, ctypes.byref(tp), ctypes.sizeof(tp), None, None
+                )
+                ok = kernel32.GetLastError() == 0
+                if ok:
+                    self._privilege_enabled = True
+                    logger.debug("Successfully enabled SeDebugPrivilege.")
+                return ok
+            finally:
+                kernel32.CloseHandle(h_token)
+        except Exception as exc:
+            logger.debug("Failed enabling SeDebugPrivilege: %s", exc)
+            return False
+
+    def _impersonate_winlogon(self) -> bool:
+        """
+        Duplicate access token of winlogon.exe in active console session
+        and impersonate it so the current thread can access Winsta0\\Winlogon.
+        """
+        if not IS_WINDOWS or advapi32 is None:
+            return False
+
+        try:
+            session_id = 1
+            if hasattr(kernel32, "WTSGetActiveConsoleSessionId"):
+                sid = kernel32.WTSGetActiveConsoleSessionId()
+                if sid != 0xFFFFFFFF:
+                    session_id = sid
+
+            TH32CS_SNAPPROCESS = 0x00000002
+            h_snap = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+            if not h_snap or h_snap == wintypes.HANDLE(-1).value:
+                return False
+
+            winlogon_pid = None
+            try:
+                pe = PROCESSENTRY32W()
+                pe.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+                if kernel32.Process32FirstW(h_snap, ctypes.byref(pe)):
+                    while True:
+                        if pe.szExeFile.lower() == "winlogon.exe":
+                            if hasattr(kernel32, "ProcessIdToSessionId"):
+                                proc_sid = wintypes.DWORD()
+                                if kernel32.ProcessIdToSessionId(pe.th32ProcessID, ctypes.byref(proc_sid)):
+                                    if proc_sid.value == session_id:
+                                        winlogon_pid = pe.th32ProcessID
+                                        break
+                            else:
+                                winlogon_pid = pe.th32ProcessID
+                                break
+                        if not kernel32.Process32NextW(h_snap, ctypes.byref(pe)):
+                            break
+            finally:
+                kernel32.CloseHandle(h_snap)
+
+            if not winlogon_pid:
+                return False
+
+            PROCESS_QUERY_INFORMATION = 0x0400
+            h_proc = kernel32.OpenProcess(PROCESS_QUERY_INFORMATION, False, winlogon_pid)
+            if not h_proc:
+                return False
+
+            try:
+                TOKEN_DUPLICATE = 0x0002
+                TOKEN_QUERY = 0x0008
+                TOKEN_IMPERSONATE = 0x0004
+                h_token = wintypes.HANDLE()
+                if not advapi32.OpenProcessToken(
+                    h_proc,
+                    TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_IMPERSONATE,
+                    ctypes.byref(h_token),
+                ):
+                    return False
+
+                try:
+                    SecurityImpersonation = 2
+                    TokenImpersonation = 2
+                    h_dup_token = wintypes.HANDLE()
+                    if not advapi32.DuplicateTokenEx(
+                        h_token,
+                        0x02000000,  # MAXIMUM_ALLOWED
+                        None,
+                        SecurityImpersonation,
+                        TokenImpersonation,
+                        ctypes.byref(h_dup_token),
+                    ):
+                        return False
+
+                    try:
+                        if advapi32.ImpersonateLoggedOnUser(h_dup_token):
+                            logger.debug("Impersonating winlogon.exe (PID %d) for Secure Desktop access.", winlogon_pid)
+                            return True
+                        return False
+                    finally:
+                        kernel32.CloseHandle(h_dup_token)
+                finally:
+                    kernel32.CloseHandle(h_token)
+            finally:
+                kernel32.CloseHandle(h_proc)
+        except Exception as exc:
+            logger.debug("Failed impersonating winlogon: %s", exc)
+            return False
+
+    def ensure_input_desktop(self, force: bool = False) -> bool:
+        """
+        Dynamically attaches calling thread to active input desktop
+        (Default user desktop, Winlogon/Lock/PIN screen, or UAC prompt).
+        """
+        if not IS_WINDOWS:
+            return True
+
+        tl = self._thread_local
+        now = time.monotonic()
+        last_check = getattr(tl, "last_check_ts", 0.0)
+        if not force and (now - last_check < 0.25):
+            return True
+        tl.last_check_ts = now
+
+        current_desk = getattr(tl, "current_desktop_handle", None)
+        current_name = getattr(tl, "current_desktop_name", "")
+
+        DESKTOP_ACCESS = 0x01FF  # All desktop specific rights
+        h_desk = user32.OpenInputDesktop(0, False, DESKTOP_ACCESS)
+        if not h_desk:
+            err = kernel32.GetLastError()
+            if err == 5:  # ERROR_ACCESS_DENIED (Desktop is Winlogon / Secure Desktop)
+                if not self._privilege_enabled:
+                    self._enable_se_debug_privilege()
+                if self._impersonate_winlogon():
+                    try:
+                        h_desk = user32.OpenInputDesktop(0, False, DESKTOP_ACCESS)
+                    finally:
+                        advapi32.RevertToSelf()
+
+        if not h_desk:
+            if not self._access_denied_warned and kernel32.GetLastError() == 5:
+                logger.warning(
+                    "Access denied to active input desktop (Secure Desktop/PIN screen). "
+                    "Ensure MultiControl runs with Administrator privileges or Windows Service Mode."
+                )
+                self._access_denied_warned = True
+            return False
+
+        self._access_denied_warned = False
+
+        name_buf = (wintypes.WCHAR * 256)()
+        needed = wintypes.DWORD()
+        desk_name = ""
+        if user32.GetUserObjectInformationW(
+            h_desk, 2, ctypes.byref(name_buf), ctypes.sizeof(name_buf), ctypes.byref(needed)
+        ):
+            desk_name = str(name_buf.value).strip()
+
+        if desk_name and desk_name.lower() == current_name.lower() and current_desk is not None:
+            user32.CloseDesktop(h_desk)
+            return True
+
+        if user32.SetThreadDesktop(h_desk):
+            logger.info("Attached thread to active desktop: '%s' (handle=0x%x)", desk_name, h_desk)
+            if current_desk:
+                try:
+                    user32.CloseDesktop(current_desk)
+                except Exception:
+                    pass
+            tl.current_desktop_handle = h_desk
+            tl.current_desktop_name = desk_name
+            return True
+        else:
+            err = kernel32.GetLastError()
+            logger.debug("SetThreadDesktop('%s') failed: error %d", desk_name, err)
+            user32.CloseDesktop(h_desk)
+            return False
+
+    def close(self) -> None:
+        """Release held inputs and clean up desktop handles."""
+        self.release_all()
+        if IS_WINDOWS:
+            tl = self._thread_local
+            desk = getattr(tl, "current_desktop_handle", None)
+            if desk:
+                try:
+                    user32.CloseDesktop(desk)
+                except Exception:
+                    pass
+                tl.current_desktop_handle = None
+                tl.current_desktop_name = ""
 
     def _virtual_screen_bounds(self) -> Tuple[int, int, int, int]:
         if not IS_WINDOWS:
@@ -358,6 +712,8 @@ class WinInputInjector:
         self._last_y = iy
         if not IS_WINDOWS:
             return
+
+        self.ensure_input_desktop(force=False)
 
         # Normalize to [0..65535] across the entire Windows Virtual Desktop
         vx, vy, vw, vh = self._virtual_screen_bounds()
@@ -382,6 +738,8 @@ class WinInputInjector:
         """Inject mouse button press (state=1) or release (state=0)."""
         if not IS_WINDOWS:
             return
+
+        self.ensure_input_desktop(force=True)
 
         flags = 0
         mouse_data = 0
@@ -431,6 +789,8 @@ class WinInputInjector:
         if not IS_WINDOWS:
             return
 
+        self.ensure_input_desktop(force=False)
+
         direction = -1.0 if invert else 1.0
         mult = (4.0 if is_pixel else float(WHEEL_DELTA)) * scroll_speed * direction
 
@@ -473,6 +833,8 @@ class WinInputInjector:
         """Inject keyboard key press (state=1) or release (state=0) using VK + ScanCode."""
         if not IS_WINDOWS:
             return
+
+        self.ensure_input_desktop(force=True)
 
         is_down = bool(state == 1)
         if not is_down and vk_code in self._held_keys:

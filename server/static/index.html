@@ -290,8 +290,18 @@
           </div>
           <pre id="cmdWinInstall">irm http://192.168.1.100:8765/install.ps1 | iex</pre>
           <p class="install-note">
-            Installs the Per-Monitor DPI-aware Win32 SendInput receiver into <code>%USERPROFILE%\.multicontrol</code>, creates a Desktop launcher, opens UDP port 8767 for sub-millisecond P2P input, and starts in the Windows System Tray.
+            Installs the Per-Monitor DPI-aware Win32 SendInput receiver into <code>%USERPROFILE%\.multicontrol</code>, creates a Desktop launcher, opens UDP port 8767, and configures auto-start with Highest Privileges for Lock Screen &amp; PIN entry.
           </p>
+          <div style="margin-top: 10px; border-top: 1px dashed rgba(255,255,255,0.15); padding-top: 10px;">
+            <div class="install-title">
+              <span class="os-badge" style="background: rgba(46, 204, 113, 0.2); color: #2ecc71; border: 1px solid rgba(46, 204, 113, 0.4);">🛡️ Optional: Boot Service Mode (Runs as SYSTEM at Cold Boot)</span>
+              <button class="btn-copy" data-copy-target="cmdWinServiceInstall">Copy</button>
+            </div>
+            <pre id="cmdWinServiceInstall">irm http://192.168.1.100:8765/install-service.ps1 | iex</pre>
+            <p class="install-note">
+              Runs as a background SYSTEM service at Windows boot before any user logs in, enabling remote login after a fresh restart.
+            </p>
+          </div>
         </div>
       </div>
 

@@ -734,7 +734,7 @@ Write-Host "[3/4] Installing dependencies (websockets, pystray, Pillow)..." -For
 & "$InstallDir\\venv\\Scripts\\pip.exe" install --quiet --upgrade pip
 & "$InstallDir\\venv\\Scripts\\pip.exe" install --quiet websockets pystray Pillow
 
-# Try opening UDP 8767 in Windows Firewall for Direct P2P (<0.5ms latency)
+# Open UDP 8767 in Windows Firewall for Direct P2P (<0.5ms latency)
 try {{
     New-NetFirewallRule -DisplayName "MultiControl Direct UDP" -Direction Inbound -Protocol UDP -LocalPort 8767 -Action Allow -ErrorAction SilentlyContinue | Out-Null
 }} catch {{ }}
@@ -745,8 +745,87 @@ try {{
     Copy-Item "$InstallDir\\run-windows.bat" (Join-Path $DesktopPath "MultiControl.bat") -Force
 }} catch {{ }}
 
-Write-Host "[4/4] Launching MultiControl Windows Agent (check your System Tray!)..." -ForegroundColor Green
-& "$InstallDir\\venv\\Scripts\\python.exe" "$InstallDir\\multicontrol_agent.py"
+# Register or update Scheduled Task with Highest Privileges for Lock Screen & PIN entry
+try {{
+    $User = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+    $Action = New-ScheduledTaskAction -Execute "$InstallDir\\venv\\Scripts\\pythonw.exe" -Argument "`"$InstallDir\\multicontrol_agent.py`"" -WorkingDirectory $InstallDir
+    $Trigger = New-ScheduledTaskTrigger -AtLogOn -User $User
+    $Principal = New-ScheduledTaskPrincipal -UserId $User -LogonType Interactive -RunLevel Highest
+    $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Days 0)
+
+    Unregister-ScheduledTask -TaskName "MultiControlAgent" -Confirm:$false -ErrorAction SilentlyContinue
+    Register-ScheduledTask -TaskName "MultiControlAgent" -Action $Action -Trigger $Trigger -Principal $Principal -Settings $Settings -Description "MultiControl Agent with Highest Privileges for Lock Screen & PIN injection" | Out-Null
+}} catch {{ }}
+
+Write-Host "[4/4] Starting MultiControl Windows Agent (check your System Tray!)..." -ForegroundColor Green
+Stop-Process -Name pythonw -Force -ErrorAction SilentlyContinue
+try {{
+    Start-ScheduledTask -TaskName "MultiControlAgent"
+}} catch {{
+    Start-Process "$InstallDir\\venv\\Scripts\\pythonw.exe" -ArgumentList "`"$InstallDir\\multicontrol_agent.py`"" -WorkingDirectory $InstallDir
+}}
+Write-Host "MultiControl is running! Lock screen PIN entry is now supported." -ForegroundColor Cyan
+"""
+    return script
+
+
+@app.get("/install-service.ps1", response_class=PlainTextResponse)
+async def windows_service_install_script(request: Request):
+    """Installs MultiControl as a boot-time background service running as SYSTEM for cold-boot login."""
+    base_http, _ = _build_server_urls(request)
+    script = f"""$ErrorActionPreference = "Stop"
+Write-Host "========================================================" -ForegroundColor Cyan
+Write-Host "  MultiControl Windows Boot Service Installer (SYSTEM)" -ForegroundColor Cyan
+Write-Host "  Enables Lock Screen, PIN Entry & Boot-Time Remote Control" -ForegroundColor Cyan
+Write-Host "  Server Hub: {base_http}" -ForegroundColor Cyan
+Write-Host "========================================================" -ForegroundColor Cyan
+
+if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {{
+    Write-Host "[!] Administrator privileges are required to install Service Mode." -ForegroundColor Red
+    Write-Host "[!] Please open PowerShell as Administrator and run:" -ForegroundColor Yellow
+    Write-Host "    irm {base_http}/install-service.ps1 | iex" -ForegroundColor White
+    exit 1
+}}
+
+$InstallDir = Join-Path $env:ProgramData "MultiControl"
+New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+Set-Location $InstallDir
+
+Write-Host "[1/4] Downloading MultiControl Service bundle..." -ForegroundColor Yellow
+Invoke-WebRequest -Uri "{base_http}/download/client.zip" -OutFile "client.zip" -UseBasicParsing
+Expand-Archive -Path "client.zip" -DestinationPath $InstallDir -Force
+Remove-Item "client.zip" -Force
+
+Write-Host "[2/4] Setting up Python environment..." -ForegroundColor Yellow
+if (-not (Test-Path "$InstallDir\\venv\\Scripts\\python.exe")) {{
+    python -m venv "$InstallDir\\venv"
+}}
+
+Write-Host "[3/4] Installing dependencies..." -ForegroundColor Yellow
+& "$InstallDir\\venv\\Scripts\\pip.exe" install --quiet --upgrade pip
+& "$InstallDir\\venv\\Scripts\\pip.exe" install --quiet websockets pystray Pillow
+
+try {{
+    New-NetFirewallRule -DisplayName "MultiControl Direct UDP" -Direction Inbound -Protocol UDP -LocalPort 8767 -Action Allow -ErrorAction SilentlyContinue | Out-Null
+}} catch {{ }}
+
+Write-Host "[4/4] Registering MultiControl Boot Service (Runs as SYSTEM on Boot)..." -ForegroundColor Yellow
+
+$Action = New-ScheduledTaskAction -Execute "$InstallDir\\venv\\Scripts\\pythonw.exe" -Argument "`"$InstallDir\\multicontrol_agent.py`" --no-tray" -WorkingDirectory $InstallDir
+$Trigger = New-ScheduledTaskTrigger -AtStartup
+$Principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+$Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Days 0) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+
+Unregister-ScheduledTask -TaskName "MultiControlService" -Confirm:$false -ErrorAction SilentlyContinue
+Register-ScheduledTask -TaskName "MultiControlService" -Action $Action -Trigger $Trigger -Principal $Principal -Settings $Settings -Description "MultiControl Boot-Time Receiver Service for Lock Screen and Cold Boot input control" | Out-Null
+
+Stop-Process -Name pythonw -Force -ErrorAction SilentlyContinue
+Start-ScheduledTask -TaskName "MultiControlService"
+
+Write-Host "========================================================" -ForegroundColor Green
+Write-Host "  MultiControl Boot Service installed & running as SYSTEM!" -ForegroundColor Green
+Write-Host "  You can now control Windows on the Lock/PIN Screen and on Cold Boot." -ForegroundColor Green
+Write-Host "========================================================" -ForegroundColor Green
 """
     return script
 
