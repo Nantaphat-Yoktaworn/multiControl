@@ -517,6 +517,7 @@ class MultiControlAgent:
                 return
             self._last_move_seq = seq
             x, y = ENTER_Screen_STRUCT.unpack_from(payload, 0)
+            self.win_injector.ensure_input_desktop(force=True)
             self.win_injector.move_cursor(x, y)
             self.tray.update_status(
                 status_text="Active — Controlled by Mac",

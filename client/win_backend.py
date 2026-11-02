@@ -32,6 +32,92 @@ kernel32 = None
 advapi32 = None
 shcore = None
 
+# Win32 Constants
+INPUT_MOUSE = 0
+INPUT_KEYBOARD = 1
+
+MOUSEEVENTF_MOVE = 0x0001
+MOUSEEVENTF_LEFTDOWN = 0x0002
+MOUSEEVENTF_LEFTUP = 0x0004
+MOUSEEVENTF_RIGHTDOWN = 0x0008
+MOUSEEVENTF_RIGHTUP = 0x0010
+MOUSEEVENTF_MIDDLEDOWN = 0x0020
+MOUSEEVENTF_MIDDLEUP = 0x0040
+MOUSEEVENTF_XDOWN = 0x0080
+MOUSEEVENTF_XUP = 0x0100
+MOUSEEVENTF_WHEEL = 0x0800
+MOUSEEVENTF_HWHEEL = 0x01000
+MOUSEEVENTF_VIRTUALDESK = 0x4000
+MOUSEEVENTF_ABSOLUTE = 0x8000
+
+XBUTTON1 = 0x0001
+XBUTTON2 = 0x0002
+WHEEL_DELTA = 120
+
+KEYEVENTF_EXTENDEDKEY = 0x0001
+KEYEVENTF_KEYUP = 0x0002
+KEYEVENTF_SCANCODE = 0x0008
+MAPVK_VK_TO_VSC = 0
+
+SM_XVIRTUALSCREEN = 76
+SM_YVIRTUALSCREEN = 77
+SM_CXVIRTUALSCREEN = 78
+SM_CYVIRTUALSCREEN = 79
+
+CF_UNICODETEXT = 13
+GMEM_MOVEABLE = 0x0002
+
+# Exact pointer-sized unsigned integer on 32-bit and 64-bit Windows
+ULONG_PTR = wintypes.WPARAM
+
+class MOUSEINPUT(ctypes.Structure):
+    _fields_ = [
+        ("dx", wintypes.LONG),
+        ("dy", wintypes.LONG),
+        ("mouseData", wintypes.DWORD),
+        ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ULONG_PTR),
+    ]
+
+class KEYBDINPUT(ctypes.Structure):
+    _fields_ = [
+        ("wVk", wintypes.WORD),
+        ("wScan", wintypes.WORD),
+        ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ULONG_PTR),
+    ]
+
+class HARDWAREINPUT(ctypes.Structure):
+    _fields_ = [
+        ("uMsg", wintypes.DWORD),
+        ("wParamL", wintypes.WORD),
+        ("wParamH", wintypes.WORD),
+    ]
+
+class _INPUTunion(ctypes.Union):
+    _fields_ = [
+        ("mi", MOUSEINPUT),
+        ("ki", KEYBDINPUT),
+        ("hi", HARDWAREINPUT),
+    ]
+
+class INPUT(ctypes.Structure):
+    _fields_ = [
+        ("type", wintypes.DWORD),
+        ("union", _INPUTunion),
+    ]
+
+class MONITORINFOEXW(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("rcMonitor", wintypes.RECT),
+        ("rcWork", wintypes.RECT),
+        ("dwFlags", wintypes.DWORD),
+        ("szDevice", wintypes.WCHAR * 32),
+    ]
+
 if IS_WINDOWS:
     user32 = ctypes.windll.user32
     kernel32 = ctypes.windll.kernel32
@@ -57,92 +143,6 @@ if IS_WINDOWS:
                 user32.SetProcessDPIAware()
         except Exception:
             pass
-
-    # Win32 Constants
-    INPUT_MOUSE = 0
-    INPUT_KEYBOARD = 1
-
-    MOUSEEVENTF_MOVE = 0x0001
-    MOUSEEVENTF_LEFTDOWN = 0x0002
-    MOUSEEVENTF_LEFTUP = 0x0004
-    MOUSEEVENTF_RIGHTDOWN = 0x0008
-    MOUSEEVENTF_RIGHTUP = 0x0010
-    MOUSEEVENTF_MIDDLEDOWN = 0x0020
-    MOUSEEVENTF_MIDDLEUP = 0x0040
-    MOUSEEVENTF_XDOWN = 0x0080
-    MOUSEEVENTF_XUP = 0x0100
-    MOUSEEVENTF_WHEEL = 0x0800
-    MOUSEEVENTF_HWHEEL = 0x01000
-    MOUSEEVENTF_VIRTUALDESK = 0x4000
-    MOUSEEVENTF_ABSOLUTE = 0x8000
-
-    XBUTTON1 = 0x0001
-    XBUTTON2 = 0x0002
-    WHEEL_DELTA = 120
-
-    KEYEVENTF_EXTENDEDKEY = 0x0001
-    KEYEVENTF_KEYUP = 0x0002
-    KEYEVENTF_SCANCODE = 0x0008
-    MAPVK_VK_TO_VSC = 0
-
-    SM_XVIRTUALSCREEN = 76
-    SM_YVIRTUALSCREEN = 77
-    SM_CXVIRTUALSCREEN = 78
-    SM_CYVIRTUALSCREEN = 79
-
-    CF_UNICODETEXT = 13
-    GMEM_MOVEABLE = 0x0002
-
-    # Exact pointer-sized unsigned integer on 32-bit and 64-bit Windows
-    ULONG_PTR = wintypes.WPARAM
-
-    class MOUSEINPUT(ctypes.Structure):
-        _fields_ = [
-            ("dx", wintypes.LONG),
-            ("dy", wintypes.LONG),
-            ("mouseData", wintypes.DWORD),
-            ("dwFlags", wintypes.DWORD),
-            ("time", wintypes.DWORD),
-            ("dwExtraInfo", ULONG_PTR),
-        ]
-
-    class KEYBDINPUT(ctypes.Structure):
-        _fields_ = [
-            ("wVk", wintypes.WORD),
-            ("wScan", wintypes.WORD),
-            ("dwFlags", wintypes.DWORD),
-            ("time", wintypes.DWORD),
-            ("dwExtraInfo", ULONG_PTR),
-        ]
-
-    class HARDWAREINPUT(ctypes.Structure):
-        _fields_ = [
-            ("uMsg", wintypes.DWORD),
-            ("wParamL", wintypes.WORD),
-            ("wParamH", wintypes.WORD),
-        ]
-
-    class _INPUTunion(ctypes.Union):
-        _fields_ = [
-            ("mi", MOUSEINPUT),
-            ("ki", KEYBDINPUT),
-            ("hi", HARDWAREINPUT),
-        ]
-
-    class INPUT(ctypes.Structure):
-        _fields_ = [
-            ("type", wintypes.DWORD),
-            ("union", _INPUTunion),
-        ]
-
-    class MONITORINFOEXW(ctypes.Structure):
-        _fields_ = [
-            ("cbSize", wintypes.DWORD),
-            ("rcMonitor", wintypes.RECT),
-            ("rcWork", wintypes.RECT),
-            ("dwFlags", wintypes.DWORD),
-            ("szDevice", wintypes.WCHAR * 32),
-        ]
 
     MONITORENUMPROC = ctypes.WINFUNCTYPE(
         wintypes.BOOL,
@@ -238,8 +238,16 @@ if IS_WINDOWS:
         ]
 
     HDESK = wintypes.HANDLE
+    HWINSTA = wintypes.HANDLE
 
-    # Desktop API signatures
+    # WindowStation & Desktop API signatures
+    user32.OpenWindowStationW.argtypes = [wintypes.LPCWSTR, wintypes.BOOL, wintypes.DWORD]
+    user32.OpenWindowStationW.restype = HWINSTA
+    user32.SetProcessWindowStation.argtypes = [HWINSTA]
+    user32.SetProcessWindowStation.restype = wintypes.BOOL
+    user32.CloseWindowStation.argtypes = [HWINSTA]
+    user32.CloseWindowStation.restype = wintypes.BOOL
+
     user32.OpenInputDesktop.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     user32.OpenInputDesktop.restype = HDESK
     user32.SetThreadDesktop.argtypes = [HDESK]
@@ -620,6 +628,16 @@ class WinInputInjector:
         if not IS_WINDOWS:
             return True
 
+        # Ensure process WindowStation is attached to interactive winsta0
+        if not getattr(self, "_winsta_attached", False):
+            try:
+                h_winsta = user32.OpenWindowStationW("winsta0", False, 0x037F)
+                if h_winsta:
+                    user32.SetProcessWindowStation(h_winsta)
+                    self._winsta_attached = True
+            except Exception:
+                pass
+
         tl = self._thread_local
         now = time.monotonic()
         last_check = getattr(tl, "last_check_ts", 0.0)
@@ -634,17 +652,25 @@ class WinInputInjector:
         h_desk = user32.OpenInputDesktop(0, False, DESKTOP_ACCESS)
         if not h_desk:
             err = kernel32.GetLastError()
-            if err == 5:  # ERROR_ACCESS_DENIED (Desktop is Winlogon / Secure Desktop)
+            if err in (1, 5):  # ERROR_ACCESS_DENIED or ERROR_INVALID_FUNCTION
                 if not self._privilege_enabled:
                     self._enable_se_debug_privilege()
                 if self._impersonate_winlogon():
+                    tl.is_impersonating = True
+                    try:
+                        h_winsta = user32.OpenWindowStationW("winsta0", False, 0x037F)
+                        if h_winsta:
+                            user32.SetProcessWindowStation(h_winsta)
+                            self._winsta_attached = True
+                    except Exception:
+                        pass
                     try:
                         h_desk = user32.OpenInputDesktop(0, False, DESKTOP_ACCESS)
-                    finally:
-                        advapi32.RevertToSelf()
+                    except Exception:
+                        pass
 
         if not h_desk:
-            if not self._access_denied_warned and kernel32.GetLastError() == 5:
+            if not self._access_denied_warned and kernel32.GetLastError() in (1, 5):
                 logger.warning(
                     "Access denied to active input desktop (Secure Desktop/PIN screen). "
                     "Ensure MultiControl runs with Administrator privileges or Windows Service Mode."
@@ -662,12 +688,26 @@ class WinInputInjector:
         ):
             desk_name = str(name_buf.value).strip()
 
+        is_winlogon = (desk_name.lower() == "winlogon")
+
+        # Keep SYSTEM token active on Winlogon so UIPI allows SendInput!
+        if is_winlogon:
+            if not getattr(tl, "is_impersonating", False):
+                if not self._privilege_enabled:
+                    self._enable_se_debug_privilege()
+                if self._impersonate_winlogon():
+                    tl.is_impersonating = True
+        else:
+            if getattr(tl, "is_impersonating", False) and advapi32 is not None:
+                advapi32.RevertToSelf()
+                tl.is_impersonating = False
+
         if desk_name and desk_name.lower() == current_name.lower() and current_desk is not None:
             user32.CloseDesktop(h_desk)
             return True
 
         if user32.SetThreadDesktop(h_desk):
-            logger.info("Attached thread to active desktop: '%s' (handle=0x%x)", desk_name, h_desk)
+            logger.info("Attached thread to active desktop: '%s' (handle=0x%x, impersonating=%s)", desk_name, h_desk, getattr(tl, "is_impersonating", False))
             if current_desk:
                 try:
                     user32.CloseDesktop(current_desk)
@@ -687,6 +727,12 @@ class WinInputInjector:
         self.release_all()
         if IS_WINDOWS:
             tl = self._thread_local
+            if getattr(tl, "is_impersonating", False) and advapi32 is not None:
+                try:
+                    advapi32.RevertToSelf()
+                except Exception:
+                    pass
+                tl.is_impersonating = False
             desk = getattr(tl, "current_desktop_handle", None)
             if desk:
                 try:
@@ -715,6 +761,9 @@ class WinInputInjector:
 
         self.ensure_input_desktop(force=False)
 
+        # Directly position hardware cursor
+        user32.SetCursorPos(ix, iy)
+
         # Normalize to [0..65535] across the entire Windows Virtual Desktop
         vx, vy, vw, vh = self._virtual_screen_bounds()
         norm_x = int(round(((ix - vx) * 65535.0) / max(1, vw - 1)))
@@ -740,6 +789,9 @@ class WinInputInjector:
             return
 
         self.ensure_input_desktop(force=True)
+
+        if self._last_x is not None and self._last_y is not None:
+            user32.SetCursorPos(int(self._last_x), int(self._last_y))
 
         flags = 0
         mouse_data = 0
@@ -844,6 +896,8 @@ class WinInputInjector:
 
         scan_code = int(user32.MapVirtualKeyW(vk_code, MAPVK_VK_TO_VSC))
         dw_flags = 0
+        if scan_code > 0:
+            dw_flags |= KEYEVENTF_SCANCODE
         if flags & 1:
             dw_flags |= KEYEVENTF_EXTENDEDKEY
         if not is_down:

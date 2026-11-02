@@ -69,6 +69,24 @@ class TestWinInputInjector(unittest.TestCase):
         self.assertTrue(res2)
         mock_user.CloseDesktop.assert_called_with(0x5678)
 
+    @patch("win_backend.IS_WINDOWS", True)
+    @patch("win_backend.user32")
+    def test_move_cursor_and_key_event(self, mock_user) -> None:
+        mock_user.MapVirtualKeyW.return_value = 0x02  # scancode for key '1'
+        mock_user.GetSystemMetrics.side_effect = lambda m: {76: 0, 77: 0, 78: 1920, 79: 1080}.get(m, 0)
+        with patch.object(self.injector, "ensure_input_desktop", return_value=True):
+            self.injector.move_cursor(500, 300)
+            mock_user.SetCursorPos.assert_called_with(500, 300)
+            mock_user.SendInput.assert_called()
+
+            # Test key_event with scancode flag (0x0008)
+            self.injector.key_event(0x31, 1)  # key down '1'
+            args = mock_user.SendInput.call_args[0]
+            inp_ref = args[1]
+            inp_obj = inp_ref._obj if hasattr(inp_ref, "_obj") else inp_ref.contents
+            self.assertEqual(inp_obj.union.ki.wScan, 0x02)
+            self.assertTrue(inp_obj.union.ki.dwFlags & 0x0008)  # KEYEVENTF_SCANCODE
+
 
 if __name__ == "__main__":
     unittest.main()
