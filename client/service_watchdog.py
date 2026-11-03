@@ -208,7 +208,9 @@ def spawn_session_agent(session_id: int, winlogon_pid: int) -> int | None:
                     if not pythonw_exe.exists():
                         pythonw_exe = Path(sys.executable)
 
-                launch_script = INSTALL_DIR / "multicontrol_agent.py"
+                launch_script = INSTALL_DIR / "launch_logged.py"
+                if not launch_script.exists():
+                    launch_script = INSTALL_DIR / "multicontrol_agent.py"
                 cmd = f'"{pythonw_exe}" "{launch_script}"'
 
                 logger.info("Spawning MultiControl session worker in Session %d: %s", session_id, cmd)

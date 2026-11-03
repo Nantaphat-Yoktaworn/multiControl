@@ -665,6 +665,7 @@ async def download_client_zip(request: Request):
             "protocol.py",
             "tray.py",
             "service_watchdog.py",
+            "launch_logged.py",
         ):
             fpath = CLIENT_DIR / fname
             if fpath.exists():

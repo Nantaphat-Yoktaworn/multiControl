@@ -9,6 +9,7 @@
 1. **Central Server Hub & 2D Screen Layout Studio (`server/main.py`)**
    - Containerized FastAPI + WebSocket Hub (`8765/tcp`) and zero-copy UDP Relay (`8766/udp`).
    - Runs in Docker on `linux-server` (`192.168.1.100:8765` on LAN / `100.64.0.10:8765` on Tailscale) and auto-starts on boot via `systemctl --user enable multicontrol.service`.
+   - **Active Bidirectional Heartbeat & Stale Socket Protection:** Periodically pings connected agents every 10 seconds to detect silent network drops immediately. Automatically supersedes older socket connections upon reconnects so stale sockets never mark active devices offline.
 2. **macOS Master Agent (`client/mac_backend.py` & `client/multicontrol_agent.py`)**
    - Captures global mouse deltas, buttons, smooth trackpad scrolling, hardware volume/media keys (`NSEventTypeSystemDefined`), and keyboard events via `Quartz` (`CGEventTap` at `kCGHIDEventTap` and `kCGSessionEventTap`).
    - Hooks Apple's `MultitouchSupport.framework` for native MacBook trackpad 3-finger middle-click and 3-finger vertical swipe gestures (`Win + Tab` / `Esc`) on Windows.
@@ -17,6 +18,7 @@
    - Uses 64-bit Win32 `ctypes` `SendInput` + Per-Monitor DPI Awareness V2 (`DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2`) for hardware-level cursor positioning, clicks, smooth pixel/wheel scrolling, and scan-code + Virtual-Key keyboard injection.
    - Parks the Windows cursor at the right-edge vertical midpoint when returning to Mac so it never triggers the Windows 11 taskbar corner hover.
    - **System Integrity & UIPI Bypass (`client/service_watchdog.py`):** Runs under `NT AUTHORITY\SYSTEM` in Session 0. Uses `CreateProcessAsUserW` with a duplicated `winlogon.exe` primary token to spawn the agent into the interactive console session (`Session 2`, etc.) with **System Integrity**, allowing input injection to bypass Windows UIPI restrictions on the **Lock Screen / PIN Prompt (`LogonUI.exe`)**, UAC dialogs, and cold-boot screens.
+   - **Robust Reconnection & Tray Sync:** Features connection timeouts, direct LAN prioritization over VPN, thread-safe Win32 tray state sync, and instant visual reconnection feedback (`● Reconnecting to Hub...`).
    - **Secure Lock Workstation Interceptor:** Automatically detects `Win + L` (sent as Mac `Control + L` with default modifier swapping) and calls `user32.LockWorkStation()` directly, bypassing Windows security restrictions that block synthetic `SendInput(Win+L)`.
    - **Authentic Hardware Scancodes:** Maps keys using `MapVirtualKeyW` and sends `KEYEVENTF_SCANCODE` (`0x0008`) so Windows Credential Provider reliably accepts keystrokes in secure PIN and password fields.
 4. **Hybrid P2P UDP + Reliable Dual-Path Transport (`client/protocol.py`)**
