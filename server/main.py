@@ -381,6 +381,29 @@ class UdpRelayProtocol(asyncio.DatagramProtocol):
                         self.transport.sendto(data, (ips[0], uport))
 
 
+async def _hub_heartbeat(hub_state: HubState) -> None:
+    """Periodically ping all connected agents to immediately detect silent network drops."""
+    while True:
+        try:
+            await asyncio.sleep(10.0)
+            now = time.time()
+            ping_msg = json.dumps({"type": "ping", "ts": now})
+            for dev_id, ws in list(hub_state.agent_sockets.items()):
+                try:
+                    await ws.send_text(ping_msg)
+                except Exception:
+                    logger.info("Agent %s failed heartbeat ping, cleaning up socket", dev_id)
+                    hub_state.agent_sockets.pop(dev_id, None)
+                    if dev_id in hub_state.devices:
+                        hub_state.devices[dev_id]["online"] = False
+                        hub_state.devices[dev_id]["last_seen"] = now
+                    asyncio.create_task(hub_state.broadcast_state())
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            logger.debug("Heartbeat loop error: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     loop = asyncio.get_running_loop()
@@ -392,7 +415,9 @@ async def lifespan(app: FastAPI):
         )
     except Exception as exc:
         logger.warning("Could not bind UDP relay on %d: %s", UDP_RELAY_PORT, exc)
+    hb_task = asyncio.create_task(_hub_heartbeat(hub))
     yield
+    hb_task.cancel()
     if transport is not None:
         transport.close()
 
@@ -421,6 +446,13 @@ async def ws_agent_endpoint(websocket: WebSocket):
                     await websocket.close(code=4001, reason="Invalid pairing token")
                     return
                 device_id = str(msg["device_id"])
+                old_ws = hub.agent_sockets.get(device_id)
+                if old_ws is not None and old_ws is not websocket:
+                    logger.info("Closing previous WebSocket for device %s (superseded)", device_id)
+                    try:
+                        await old_ws.close(code=1000, reason="Superseded by new connection")
+                    except Exception:
+                        pass
                 hub.agent_sockets[device_id] = websocket
                 hub.register_device(msg, client_ip)
                 logger.info(
@@ -430,6 +462,10 @@ async def ws_agent_endpoint(websocket: WebSocket):
                     client_ip,
                 )
                 await hub.broadcast_state()
+
+            elif msg_type == "pong" and device_id:
+                if device_id in hub.devices:
+                    hub.devices[device_id]["last_seen"] = time.time()
 
             elif msg_type == "update_displays" and device_id:
                 dev_info = hub.devices.get(device_id, {})
@@ -476,15 +512,16 @@ async def ws_agent_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         pass
     except Exception as exc:
-        logger.debug("Agent WebSocket closed: %s", exc)
+        logger.warning("Agent WebSocket exception (%s): %s", client_ip, exc, exc_info=True)
     finally:
         if device_id:
+            # Only mark offline if this websocket was NOT superseded by a newer connection
             if hub.agent_sockets.get(device_id) is websocket:
                 hub.agent_sockets.pop(device_id, None)
-            if device_id in hub.devices:
-                hub.devices[device_id]["online"] = False
-                hub.devices[device_id]["last_seen"] = time.time()
-            await hub.broadcast_state()
+                if device_id in hub.devices:
+                    hub.devices[device_id]["online"] = False
+                    hub.devices[device_id]["last_seen"] = time.time()
+                await hub.broadcast_state()
 
 
 @app.websocket("/ws/ui")
@@ -627,6 +664,7 @@ async def download_client_zip(request: Request):
             "layout_engine.py",
             "protocol.py",
             "tray.py",
+            "service_watchdog.py",
         ):
             fpath = CLIENT_DIR / fname
             if fpath.exists():

@@ -839,8 +839,9 @@ class MultiControlAgent:
                 logger.info("Connecting to MultiControl Server Hub: %s", ws_url)
                 async with websockets.connect(
                     ws_url,
-                    ping_interval=15,
-                    ping_timeout=15,
+                    open_timeout=5,
+                    ping_interval=10,
+                    ping_timeout=10,
                     close_timeout=3,
                 ) as ws:
                     self._ws = ws
@@ -858,11 +859,14 @@ class MultiControlAgent:
                         "displays": displays,
                     }
                     await ws.send(json.dumps(reg_msg))
-                    self.tray.update_status(
-                        status_text="Connected to Hub",
-                        transport_text=f"Hub: {server_host}",
-                        state="connected",
-                    )
+                    try:
+                        self.tray.update_status(
+                            status_text="Connected to Hub",
+                            transport_text=f"Hub: {server_host}",
+                            state="connected",
+                        )
+                    except Exception:
+                        pass
 
                     probe_task = asyncio.create_task(self._periodic_probe_task())
                     try:
@@ -872,13 +876,24 @@ class MultiControlAgent:
                     finally:
                         probe_task.cancel()
                         self._ws = None
+                        try:
+                            self.tray.update_status(
+                                status_text="Reconnecting to Hub...",
+                                transport_text=f"Connection lost to {server_host}",
+                                state="disconnected",
+                            )
+                        except Exception:
+                            pass
             except Exception as exc:
                 self._ws = None
-                self.tray.update_status(
-                    status_text="Reconnecting to Server...",
-                    transport_text=str(exc)[:40],
-                    state="disconnected",
-                )
+                try:
+                    self.tray.update_status(
+                        status_text="Reconnecting to Server...",
+                        transport_text=str(exc)[:40],
+                        state="disconnected",
+                    )
+                except Exception:
+                    pass
                 logger.warning("Server connection lost (%s), retrying in 2s...", exc)
                 await asyncio.sleep(2.0)
 
@@ -961,6 +976,11 @@ class MultiControlAgent:
                     "displays": displays,
                 }
             )
+            return
+
+        if msg_type == "ping":
+            self._send_ws_json({"type": "pong", "device_id": self.device_id})
+            return
 
     # ------------------------------------------------------------------
     # Startup & Lifecycle
@@ -1064,6 +1084,12 @@ def main() -> None:
             "ws://192.168.1.100:8765/ws/agent",
             "ws://100.64.0.10:8765/ws/agent",
         ]
+
+    # Prioritize local LAN addresses over Tailscale/VPN for lowest latency and direct connection
+    def _url_priority(u: str) -> int:
+        return 2 if "100." in u else 1
+
+    server_urls.sort(key=_url_priority)
 
     token = args.token or cfg.get("token") or "mc-default-pair-token"
     default_name = (
