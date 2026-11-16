@@ -5,15 +5,16 @@ services:
       dockerfile: Dockerfile
     image: multicontrol-hub:latest
     container_name: multicontrol-hub
-    restart: always
+    restart: unless-stopped
     environment:
-      - TZ=UTC
-      - MULTICONTROL_PORT=8765
-      - MULTICONTROL_UDP_PORT=8766
-      - MULTICONTROL_LAN_IP=192.168.1.100
-      - MULTICONTROL_TAILSCALE_IP=100.64.0.10
+      - TZ=${TZ:-UTC}
+      - MULTICONTROL_PORT=${MULTICONTROL_PORT:-8765}
+      - MULTICONTROL_UDP_PORT=${MULTICONTROL_UDP_PORT:-8766}
+      - MULTICONTROL_LAN_IP=${MULTICONTROL_LAN_IP:-}
+      - MULTICONTROL_TAILSCALE_IP=${MULTICONTROL_TAILSCALE_IP:-}
+      - MULTICONTROL_TOKEN=${MULTICONTROL_TOKEN:-}
     ports:
-      - "8765:8765/tcp"
-      - "8766:8766/udp"
+      - "${MULTICONTROL_PORT:-8765}:8765/tcp"
+      - "${MULTICONTROL_UDP_PORT:-8766}:8766/udp"
     volumes:
       - ./data:/app/data

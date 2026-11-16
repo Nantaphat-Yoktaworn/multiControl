@@ -73,9 +73,9 @@ def detect_os_type() -> str:
 
 
 def get_local_ipv4_addresses() -> List[str]:
-    """Discover all local non-loopback IPv4 addresses (LAN + Tailscale)."""
+    """Discover all local non-loopback IPv4 addresses (LAN + Tailscale/CGNAT)."""
     ips: List[str] = []
-    for probe_target in ("192.168.1.100", "100.64.0.10", "8.8.8.8"):
+    for probe_target in ("8.8.8.8", "1.1.1.1", "100.64.0.1"):
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.settimeout(0.2)
@@ -832,7 +832,7 @@ class MultiControlAgent:
             url_idx += 1
 
             parsed = urlparse(ws_url)
-            server_host = parsed.hostname or "192.168.1.100"
+            server_host = parsed.hostname or "127.0.0.1"
             self.server_relay_addr = (server_host, self.server_udp_port)
 
             try:
@@ -1080,10 +1080,15 @@ def main() -> None:
             if u not in server_urls:
                 server_urls.append(u)
     if not server_urls:
-        server_urls = [
-            "ws://192.168.1.100:8765/ws/agent",
-            "ws://100.64.0.10:8765/ws/agent",
-        ]
+        env_urls = os.environ.get("MULTICONTROL_SERVER_URL", "")
+        if env_urls.strip():
+            server_urls = [u.strip() for u in env_urls.split(",") if u.strip()]
+    if not server_urls:
+        logger.warning(
+            "No server URL configured in config.json, --server, or MULTICONTROL_SERVER_URL; "
+            "defaulting to ws://127.0.0.1:8765/ws/agent"
+        )
+        server_urls = ["ws://127.0.0.1:8765/ws/agent"]
 
     # Prioritize local LAN addresses over Tailscale/VPN for lowest latency and direct connection
     def _url_priority(u: str) -> int:

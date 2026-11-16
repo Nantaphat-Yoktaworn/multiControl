@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import secrets
+import socket
 import sys
 import time
 import zipfile
@@ -45,8 +46,33 @@ logging.basicConfig(
 )
 logger = logging.getLogger("multicontrol.server")
 
-LAN_IP = os.environ.get("MULTICONTROL_LAN_IP", "192.168.1.100")
-TAILSCALE_IP = os.environ.get("MULTICONTROL_TAILSCALE_IP", "100.64.0.10")
+def _detect_primary_lan_ip() -> str:
+    """Return configured LAN IP or best-effort local outbound IPv4 address."""
+    env_ip = os.environ.get("MULTICONTROL_LAN_IP", "").strip()
+    if env_ip:
+        return env_ip
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(0.2)
+        sock.connect(("8.8.8.8", 80))
+        ip = sock.getsockname()[0]
+        sock.close()
+        if ip and not ip.startswith("127."):
+            return ip
+    except Exception:
+        pass
+    try:
+        ip = socket.gethostbyname(socket.gethostname())
+        if ip and not ip.startswith("127."):
+            return ip
+    except Exception:
+        pass
+    return "127.0.0.1"
+
+
+CONFIGURED_LAN_IP = os.environ.get("MULTICONTROL_LAN_IP", "").strip()
+LAN_IP = _detect_primary_lan_ip()
+TAILSCALE_IP = os.environ.get("MULTICONTROL_TAILSCALE_IP", "").strip()
 HTTP_PORT = int(os.environ.get("MULTICONTROL_PORT", "8765"))
 UDP_RELAY_PORT = int(os.environ.get("MULTICONTROL_UDP_PORT", "8766"))
 
@@ -302,7 +328,7 @@ class HubState:
             "devices": list(self.devices.values()),
             "cursor": self.cursor_state,
             "server_info": {
-                "lan_ip": LAN_IP,
+                "lan_ip": CONFIGURED_LAN_IP,
                 "tailscale_ip": TAILSCALE_IP,
                 "http_port": HTTP_PORT,
                 "udp_port": UDP_RELAY_PORT,
@@ -581,6 +607,11 @@ async def ws_ui_endpoint(websocket: WebSocket):
 # ---------------------------------------------------------------------------
 # REST API Endpoints
 # ---------------------------------------------------------------------------
+@app.get("/api/health")
+async def api_health():
+    return {"ok": True}
+
+
 @app.get("/api/state")
 async def api_get_state():
     return hub.to_cluster_payload()
@@ -633,12 +664,16 @@ async def api_remove_device(device_id: str):
 # 1-Line Bootstrap Installers & Pre-Configured Client Bundle
 # ---------------------------------------------------------------------------
 def _build_server_urls(request: Request) -> Tuple[str, List[str]]:
-    host_hdr = request.headers.get("host", f"{LAN_IP}:{HTTP_PORT}")
+    fallback_host = CONFIGURED_LAN_IP or LAN_IP
+    host_hdr = request.headers.get("host", f"{fallback_host}:{HTTP_PORT}")
     req_host = host_hdr.split(":")[0]
     hosts = []
-    for h in (req_host, LAN_IP, TAILSCALE_IP):
+    candidates = (req_host, CONFIGURED_LAN_IP, TAILSCALE_IP) if req_host else (fallback_host, TAILSCALE_IP)
+    for h in candidates:
         if h and h not in hosts:
             hosts.append(h)
+    if not hosts:
+        hosts.append(fallback_host)
     ws_urls = [f"ws://{h}:{HTTP_PORT}/ws/agent" for h in hosts]
     base_http = f"http://{hosts[0]}:{HTTP_PORT}"
     return base_http, ws_urls

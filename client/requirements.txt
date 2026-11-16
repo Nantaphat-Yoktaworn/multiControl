@@ -1,0 +1,7 @@
+# Cross-platform desktop agent dependencies
+websockets>=14.1
+pystray>=0.19.5
+Pillow>=10.0.0
+
+# macOS-only native Quartz / AppKit event capture & menu bar
+pyobjc-framework-Quartz>=10.0; sys_platform == "darwin"

@@ -1,5 +1,6 @@
 .git
 .gitignore
+.github
 __pycache__/
 *.py[cod]
 *$py.class
@@ -7,7 +8,11 @@ __pycache__/
 venv/
 env/
 .env
+.env.*
 data/
+docs/
+README.md
+LICENSE
 *.log
 .DS_Store
 Thumbs.db

@@ -151,7 +151,7 @@ class TestMultiControlEngine(unittest.TestCase):
         self.assertEqual(payload, b"\x01\x02\x03\x04")
 
     def test_vertical_stacked_mac_below_ultrawide_windows(self) -> None:
-        # User's real setup: Mac 1470x956 at (0, 98), Windows 3440x1440 at (-985, -1342)
+        # Stacked layout: Mac 1470x956 at (0, 98), Windows 3440x1440 at (-985, -1342)
         mac = DisplayRect(
             id="mac:0",
             device_id="mac",

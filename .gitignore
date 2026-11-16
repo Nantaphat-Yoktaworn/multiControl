@@ -2,6 +2,8 @@
 data/
 config.json
 .env
+.env.*
+!.env.example
 
 # Python virtual environments & caches
 .venv/
@@ -11,6 +13,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.log
+.pytest_cache/
+build/
+dist/
 
 # OS metadata
 .DS_Store

@@ -267,8 +267,8 @@
 
       <div class="network-selector">
         <span>Network Route:</span>
-        <button class="btn-net active" data-net="lan" id="btnNetLan">Local LAN (192.168.1.100)</button>
-        <button class="btn-net" data-net="tailscale" id="btnNetTailscale">Tailscale VPN (100.64.0.10)</button>
+        <button class="btn-net active" data-net="lan" id="btnNetLan">Local LAN</button>
+        <button class="btn-net hidden" data-net="tailscale" id="btnNetTailscale">Tailscale VPN</button>
       </div>
 
       <div class="install-steps">
@@ -277,7 +277,7 @@
             <span class="os-badge mac"> Step 1: Run on your Mac (Master Keyboard &amp; Mouse)</span>
             <button class="btn-copy" data-copy-target="cmdMacInstall">Copy Command</button>
           </div>
-          <pre id="cmdMacInstall">curl -fsSL http://192.168.1.100:8765/install.sh | bash</pre>
+          <pre id="cmdMacInstall">curl -fsSL http://&lt;SERVER_IP&gt;:8765/install.sh | bash</pre>
           <p class="install-note">
             Installs the Quartz EventTap agent into <code>~/.multicontrol</code>, adds a <code>MultiControl.command</code> shortcut to your Desktop, and puts the MultiControl icon in your macOS Menu Bar. Grant <strong>Accessibility</strong> permission when macOS prompts you.
           </p>
@@ -288,7 +288,7 @@
             <span class="os-badge win">⊞ Step 2: Run on your Windows PC (PowerShell)</span>
             <button class="btn-copy" data-copy-target="cmdWinInstall">Copy Command</button>
           </div>
-          <pre id="cmdWinInstall">irm http://192.168.1.100:8765/install.ps1 | iex</pre>
+          <pre id="cmdWinInstall">irm http://&lt;SERVER_IP&gt;:8765/install.ps1 | iex</pre>
           <p class="install-note">
             Installs the Per-Monitor DPI-aware Win32 SendInput receiver into <code>%USERPROFILE%\.multicontrol</code>, creates a Desktop launcher, opens UDP port 8767, and configures auto-start with Highest Privileges for Lock Screen &amp; PIN entry.
           </p>
@@ -297,7 +297,7 @@
               <span class="os-badge" style="background: rgba(46, 204, 113, 0.2); color: #2ecc71; border: 1px solid rgba(46, 204, 113, 0.4);">🛡️ Recommended: Boot Service Mode (Lock Screen, PIN &amp; Cold Boot)</span>
               <button class="btn-copy" data-copy-target="cmdWinServiceInstall">Copy</button>
             </div>
-            <pre id="cmdWinServiceInstall">irm http://192.168.1.100:8765/install-service.ps1 | iex</pre>
+            <pre id="cmdWinServiceInstall">irm http://&lt;SERVER_IP&gt;:8765/install-service.ps1 | iex</pre>
             <p class="install-note">
               Runs as a SYSTEM Service Watchdog at Windows boot, launching into the interactive console session with System Integrity to bypass UIPI and enable remote PIN/password entry, UAC control, and cold-boot login.
             </p>

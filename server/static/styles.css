@@ -601,6 +601,10 @@ kbd {
   font-weight: 600;
 }
 
+.btn-net.hidden {
+  display: none;
+}
+
 .install-steps {
   display: flex;
   flex-direction: column;

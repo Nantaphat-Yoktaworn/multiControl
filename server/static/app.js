@@ -39,8 +39,8 @@
       updated_at: 0,
     },
     server_info: {
-      lan_ip: window.location.hostname || "192.168.1.100",
-      tailscale_ip: "100.64.0.10",
+      lan_ip: window.location.hostname || "",
+      tailscale_ip: "",
       http_port: window.location.port || 8765,
     },
   };
@@ -808,6 +808,8 @@
     const tol = Number(s.edge_snap_tolerance_px || 18);
     document.getElementById("rngEdgeTolerance").value = tol;
     document.getElementById("lblEdgeTolerance").textContent = `${Math.round(tol)} px`;
+
+    updateModalInstallCommands(currentNetMode);
   }
 
   function renderDeviceList() {
@@ -1073,12 +1075,42 @@
 
   // Connect Modal
   const modal = document.getElementById("connectModal");
+  let currentNetMode = "lan";
+
+  function resolveServerHost(netMode) {
+    const lanHost = (state.server_info.lan_ip || "").trim() || window.location.hostname || "localhost";
+    const tsHost = (state.server_info.tailscale_ip || "").trim();
+    if (netMode === "tailscale" && tsHost) {
+      return tsHost;
+    }
+    return lanHost;
+  }
+
+  function updateNetworkButtons() {
+    const btnLan = document.getElementById("btnNetLan");
+    const btnTs = document.getElementById("btnNetTailscale");
+    const lanHost = resolveServerHost("lan");
+    const tsHost = (state.server_info.tailscale_ip || "").trim();
+
+    btnLan.textContent = `Local LAN (${lanHost})`;
+    if (tsHost) {
+      btnTs.textContent = `Tailscale VPN (${tsHost})`;
+      btnTs.classList.remove("hidden");
+    } else {
+      btnTs.classList.add("hidden");
+      if (currentNetMode === "tailscale") {
+        currentNetMode = "lan";
+        btnLan.classList.add("active");
+        btnTs.classList.remove("active");
+      }
+    }
+  }
+
   function updateModalInstallCommands(netMode) {
-    const host =
-      netMode === "tailscale"
-        ? state.server_info.tailscale_ip || "100.64.0.10"
-        : state.server_info.lan_ip || "192.168.1.100";
-    const port = state.server_info.http_port || 8765;
+    currentNetMode = netMode;
+    updateNetworkButtons();
+    const host = resolveServerHost(currentNetMode);
+    const port = state.server_info.http_port || window.location.port || 8765;
     document.getElementById(
       "cmdMacInstall"
     ).textContent = `curl -fsSL http://${host}:${port}/install.sh | bash`;
@@ -1092,6 +1124,8 @@
   }
 
   document.getElementById("btnOpenConnectModal").addEventListener("click", () => {
+    document.getElementById("btnNetLan").classList.add("active");
+    document.getElementById("btnNetTailscale").classList.remove("active");
     updateModalInstallCommands("lan");
     modal.classList.remove("hidden");
   });
